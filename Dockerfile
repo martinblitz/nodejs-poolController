@@ -1,20 +1,17 @@
-FROM ubuntu:latest
-USER root
-WORKDIR /home/app
-COPY ./package.json /home/app/package.json
-RUN apt-get update ; apt-get -y upgrade
-RUN apt-get -y install curl gnupg make g++ python udev tzdata
-RUN curl -fsSL https://deb.nodesource.com/setup_12.x | bash -
-RUN apt-get install -y nodejs
-RUN npm install -g npm
-
-RUN npm install
-
+FROM node:lts-alpine AS build
+RUN apk add --no-cache make gcc g++ python linux-headers udev tzdata
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
 COPY . .
-
-RUN npm install
 RUN npm run build
+RUN npm ci --production
 
-RUN chmod +x /home/app/startup.sh
-
-ENTRYPOINT ["bash", "/home/app/startup.sh"]
+FROM node:lts-alpine as prod
+RUN apk add git
+RUN mkdir /app && chown node:node /app
+WORKDIR /app
+COPY --chown=node:node --from=build /app .
+USER node
+ENV NODE_ENV=production
+ENTRYPOINT ["node", "dist/app.js"]

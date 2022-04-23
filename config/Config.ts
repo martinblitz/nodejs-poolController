@@ -30,7 +30,7 @@ class Config {
     public emitter: EventEmitter;
     constructor() {
         let self=this;
-        this.cfgPath = path.posix.join(process.cwd(), "/data/config.json");
+        this.cfgPath = path.posix.join(process.cwd(), "/config.json");
         this.emitter = new EventEmitter();
         // RKS 05-18-20: This originally had multiple points of failure where it was not in the try/catch.
         try {
