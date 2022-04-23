@@ -1,6 +1,7 @@
 ﻿{
   "controller": {
     "comms": {
+      "portId": 0,
       "enabled": true,
       "rs485Port": "/dev/ttyUSB0",
       "mockPort": false,
@@ -17,7 +18,18 @@
         "autoOpen": false,
         "lock": false
       }
+    },
+    "backups": {
+      "automatic": false,
+      "interval": {
+        "days": 30,
+        "hours": 0
+      },
+      "keepCount": 5,
+      "njsPC":  true,
+      "servers": []
     }
+
   },
   "web": {
     "servers": {
@@ -52,6 +64,7 @@
     "interfaces": {
       "smartThings": {
         "name": "SmartThings",
+        "type": "rest",
         "enabled": false,
         "fileName": "smartThings-Hubitat.json",
         "globals": {},
@@ -62,6 +75,7 @@
       },
       "hubitat": {
         "name": "Hubitat",
+        "type": "rest",
         "enabled": false,
         "fileName": "smartThings-Hubitat.json",
         "globals": {},
@@ -72,6 +86,7 @@
       },
       "vera": {
         "name": "Vera",
+        "type": "rest",
         "enabled": false,
         "fileName": "vera.json",
         "vars": {
@@ -83,6 +98,7 @@
         }
       },
       "valveRelay": {
+        "type": "rest",
         "name": "Valve Relays",
         "enabled": false,
         "fileName": "valveRelays.json",
@@ -100,13 +116,29 @@
         "enabled": false,
         "fileName": "influxDB.json",
         "options": {
+          "version": 1,
           "protocol": "http",
           "host": "192.168.0.1",
-          "port": 32770,
+          "port": 9999,
           "username": "",
           "password": "",
           "database": "pool",
           "retentionPolicy": "autogen"
+        }
+      },
+      "influxDBv2": {
+        "name": "InfluxDBv2",
+        "type": "influx",
+        "enabled": false,
+        "fileName": "influxDB.json",
+        "options": {
+          "version": 2,
+          "protocol": "http",
+          "host": "192.168.0.1",
+          "port": 9999,
+          "token": "...LuyM84JJx93Qvc7tfaXPbI_mFFjRBjaA==",
+          "org": "example-org",
+          "bucket": "57ec4eed2d90a50b"
         }
       },
       "mqtt": {

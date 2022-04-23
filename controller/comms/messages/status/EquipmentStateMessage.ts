@@ -101,7 +101,9 @@ export class EquipmentStateMessage {
         Message.headerSubByte = msg.header[1];
         //console.log(process.memoryUsage());
         if (msg.action === 2 && state.isInitialized && sys.controllerType === ControllerType.Nixie) {
-            // Start over because we didn't have communication before but we now do.
+            // Start over because we didn't have communication before but we now do.  This will fall into the if
+            // below so that it goes through the intialization process.  In this case we didn't see an OCP when we started
+            // but there clearly is one now.
             sys.controllerType = ControllerType.Unknown;
             state.status = 0;
         }
@@ -139,19 +141,24 @@ export class EquipmentStateMessage {
 
                     // Shared
                     let dt = new Date();
-                    if (state.chemControllers.length > 0) {
-                        // TODO: move this to chemController when we understand the packets better
-                        for (let i = 0; i < state.chemControllers.length; i++) {
-                            let ccontroller = state.chemControllers.getItemByIndex(i);
-                            if (sys.board.valueMaps.chemControllerTypes.getName(ccontroller.type) === 'intellichem') {
-                                if (dt.getTime() - ccontroller.lastComm > 60000) ccontroller.status = 1;
-                            }
-                        }
-                    }
+                    // RKS: This was moved to the ChemControllerState message.  This is flawed in that it incorrectly sets IntelliChem to no comms.
+                    //if (state.chemControllers.length > 0) {
+                    //    // TODO: move this to chemController when we understand the packets better
+                    //    for (let i = 0; i < state.chemControllers.length; i++) {
+                    //        let ccontroller = state.chemControllers.getItemByIndex(i);
+                    //        if (sys.board.valueMaps.chemControllerTypes.getName(ccontroller.type) === 'intellichem') {
+                    //            if (dt.getTime() - ccontroller.lastComm > 60000) ccontroller.status = 1;
+                    //        }
+                    //    }
+                    //}
                     state.time.hours = msg.extractPayloadByte(0);
                     state.time.minutes = msg.extractPayloadByte(1);
                     state.time.seconds = dt.getSeconds();
-                    state.mode = msg.extractPayloadByte(9) & 0x81;
+                    state.mode = sys.controllerType !== ControllerType.IntelliCenter ? (msg.extractPayloadByte(9) & 0x81) : (msg.extractPayloadByte(9) & 0x01);
+
+                    // RKS: The units have been normalized for English and Metric for the overall panel.  It is important that the val numbers match for at least the temp units since
+                    // the only unit of measure native to the Touch controllers is temperature they chose to name these C or F.  However, with the njsPC extensions this is non-semantic
+                    // since pressure, volume, and length have been introduced.
                     sys.general.options.units = state.temps.units = msg.extractPayloadByte(9) & 0x04;
                     state.valve = msg.extractPayloadByte(10);
 
@@ -163,8 +170,8 @@ export class EquipmentStateMessage {
                     // 1. IntelliCenter has "manual" time set (Internet will automatically adjust) and autoAdjustDST is enabled
                     // 2. *Touch is "manual" (only option) and autoAdjustDST is enabled - (same as #1)
                     // 3. clock source is "server" isn't an OCP option but can be enabled on the clients 
-                    if (dt.getMinutes() % 5 === 0 && sys.general.options.clockSource === 'server') {
-                        if ((Math.abs(dt.getTime() - state.time.getTime()) > 60 * 5 * 1000) && !state.time.isUpdating) {
+                    if (dt.getMinutes() % 5 === 0 && dt.getSeconds() <= 10 && sys.general.options.clockSource === 'server') {
+                        if ((Math.abs(dt.getTime() - state.time.getTime()) > 60 * 2 * 1000) && !state.time.isUpdating) {
                             state.time.isUpdating = true;
                             sys.board.system.setDateTimeAsync({ dt, dst: sys.general.options.adjustDST || 0, })
                                 .then(() => {
@@ -197,10 +204,19 @@ export class EquipmentStateMessage {
                             tbody.name = cbody.name;
                             tbody.circuit = cbody.circuit = 6;
                             tbody.heatStatus = msg.extractPayloadByte(11) & 0x0F;
-                            if ((msg.extractPayloadByte(2) & 0x20) === 32) {
+                            // With the IntelliCenter i10D, bit 6 is not reliable.  It is not set properly and requires the 204 message
+                            // to process the data.
+                            if (!sys.equipment.dual) {
+                                if ((msg.extractPayloadByte(2) & 0x20) === 32) {
+                                    tbody.temp = state.temps.waterSensor1;
+                                    tbody.isOn = true;
+                                } else tbody.isOn = false;
+                            }
+                            else if (state.circuits.getItemById(6).isOn === true) {
                                 tbody.temp = state.temps.waterSensor1;
                                 tbody.isOn = true;
-                            } else tbody.isOn = false;
+                            }
+                            else tbody.isOn = false;
                         }
                         if (sys.bodies.length > 1) {
                             const tbody: BodyTempState = state.temps.bodies.getItemById(2, true);
@@ -210,10 +226,16 @@ export class EquipmentStateMessage {
                             tbody.name = cbody.name;
                             tbody.circuit = cbody.circuit = 1;
                             tbody.heatStatus = (msg.extractPayloadByte(11) & 0xF0) >> 4;
-                            if ((msg.extractPayloadByte(2) & 0x01) === 1) {
+                            if (!sys.equipment.dual) {
+                                if ((msg.extractPayloadByte(2) & 0x01) === 1) {
+                                    tbody.temp = sys.equipment.shared ? state.temps.waterSensor1 : state.temps.waterSensor2;
+                                    tbody.isOn = true;
+                                } else tbody.isOn = false;
+                            } else if (state.circuits.getItemById(1).isOn === true) {
                                 tbody.temp = sys.equipment.shared ? state.temps.waterSensor1 : state.temps.waterSensor2;
                                 tbody.isOn = true;
-                            } else tbody.isOn = false;
+                            }
+                            else tbody.isOn = false;
                         }
                         if (sys.bodies.length > 2) {
                             state.temps.waterSensor3 = fnTempFromByte(msg.extractPayloadByte(20));
@@ -335,17 +357,41 @@ export class EquipmentStateMessage {
                             tbody.setPoint = cbody.setPoint;
                             tbody.name = cbody.name;
                             tbody.circuit = cbody.circuit = 6;
-                            tbody.heatMode = cbody.heatMode = msg.extractPayloadByte(22) & 0x03;
+
+                            //RKS: This heat mode did not include all the bits necessary for hybrid heaters
+                            //tbody.heatMode = cbody.heatMode = msg.extractPayloadByte(22) & 0x03;
+                            tbody.heatMode = cbody.heatMode = msg.extractPayloadByte(22) & 0x33;
                             let heatStatus = sys.board.valueMaps.heatStatus.getValue('off');
                             if (tbody.isOn) {
-                                //const heaterActive = (msg.extractPayloadByte(10) & 0x0C) === 12;
-                                //const solarActive = (msg.extractPayloadByte(10) & 0x30) === 48;
-                                const heaterActive = (msg.extractPayloadByte(10) & 0x04) === 0x04;
-                                const solarActive = (msg.extractPayloadByte(10) & 0x10) === 0x10;
-                                const cooling = solarActive && tbody.temp > tbody.setPoint;
-                                if (heaterActive) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
-                                if (cooling) heatStatus = sys.board.valueMaps.heatStatus.getValue('cooling');
-                                else if (solarActive) heatStatus = sys.board.valueMaps.heatStatus.getValue('solar');
+                                if (tbody.heaterOptions.hybrid > 0) {
+                                    // ETi When heating with
+                                    // Heatpump (1) = 12    H:true S:false C:false
+                                    // Gas (2) = 48         H:false S:true C:false
+                                    // Hybrid (3) = 48      H:true S:false C:false
+                                    // Dual (16) = 60       H:true S:true C:false
+                                    // What this means is that Touch actually treats the heat status as either heating with
+                                    // the primary heater for the body or the secondary.  In the case of a hybrid heater
+                                    // the primary is a heatpump and the secondary is gas.  In the case of gas + solar or gas + heatpump
+                                    // the gas heater is the primary and solar or heatpump is the secondary.   So we need to dance a little bit
+                                    // here.  We do this by checking the heater options.
+
+                                    // This can be the only heater solar cannot be installed with this.
+                                    let byte = msg.extractPayloadByte(10);
+                                    // Either the primary, secondary, or both is engaged.
+                                    if ((byte & 0x14) === 0x14) heatStatus = sys.board.valueMaps.heatStatus.getValue('dual');
+                                    else if (byte & 0x10) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
+                                    else if (byte & 0x04) heatStatus = sys.board.valueMaps.heatStatus.getValue('hpheat');
+                                }
+                                else {
+                                    //const heaterActive = (msg.extractPayloadByte(10) & 0x0C) === 12;
+                                    //const solarActive = (msg.extractPayloadByte(10) & 0x30) === 48;
+                                    const heaterActive = (msg.extractPayloadByte(10) & 0x04) === 0x04;
+                                    const solarActive = (msg.extractPayloadByte(10) & 0x10) === 0x10;
+                                    const cooling = solarActive && tbody.temp > tbody.setPoint;
+                                    if (heaterActive) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
+                                    if (cooling) heatStatus = sys.board.valueMaps.heatStatus.getValue('cooling');
+                                    else if (solarActive) heatStatus = sys.board.valueMaps.heatStatus.getValue('solar');
+                                }
                             }
                             tbody.heatStatus = heatStatus;
                             sys.board.schedules.syncScheduleHeatSourceAndSetpoint(cbody, tbody);
@@ -358,21 +404,32 @@ export class EquipmentStateMessage {
                                 tbody.temp = sys.equipment.shared ? state.temps.waterSensor1 : state.temps.waterSensor2;
                                 tbody.isOn = true;
                             } else tbody.isOn = false;
-                            tbody.heatMode = cbody.heatMode = (msg.extractPayloadByte(22) & 0x0C) >> 2;
+                            //RKS: This heat mode did not include all the bits necessary for hybrid heaters
+                            //tbody.heatMode = cbody.heatMode = (msg.extractPayloadByte(22) & 0x0C) >> 2;
+                            tbody.heatMode = cbody.heatMode = (msg.extractPayloadByte(22) & 0xCC) >> 2;
                             tbody.setPoint = cbody.setPoint;
                             tbody.name = cbody.name;
                             tbody.circuit = cbody.circuit = 1;
                             let heatStatus = sys.board.valueMaps.heatStatus.getValue('off');
                             if (tbody.isOn) {
-                                //const heaterActive = (msg.extractPayloadByte(10) & 0x0C) === 12;
-                                //const solarActive = (msg.extractPayloadByte(10) & 0x30) === 48;
-                                const heaterActive = (msg.extractPayloadByte(10) & 0x08) === 0x08;
-                                const solarActive = (msg.extractPayloadByte(10) & 0x20) === 0x20;
-
-                                const cooling = solarActive && tbody.temp > tbody.setPoint;
-                                if (heaterActive) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
-                                if (cooling) heatStatus = sys.board.valueMaps.heatStatus.getValue('cooling');
-                                else if (solarActive) heatStatus = sys.board.valueMaps.heatStatus.getValue('solar');
+                                if (tbody.heaterOptions.hybrid > 0) {
+                                    // This can be the only heater solar cannot be installed with this.
+                                    let byte = msg.extractPayloadByte(10);
+                                    // Either the primary, secondary, or both is engaged.
+                                    if ((byte & 0x28) === 0x28) heatStatus = sys.board.valueMaps.heatStatus.getValue('dual');
+                                    else if (byte & 0x20) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
+                                    else if (byte & 0x08) heatStatus = sys.board.valueMaps.heatStatus.getValue('hpheat');
+                                }
+                                else {
+                                    //const heaterActive = (msg.extractPayloadByte(10) & 0x0C) === 12;
+                                    //const solarActive = (msg.extractPayloadByte(10) & 0x30) === 48;
+                                    const heaterActive = (msg.extractPayloadByte(10) & 0x08) === 0x08;
+                                    const solarActive = (msg.extractPayloadByte(10) & 0x20) === 0x20;
+                                    const cooling = solarActive && tbody.temp > tbody.setPoint;
+                                    if (heaterActive) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
+                                    if (cooling) heatStatus = sys.board.valueMaps.heatStatus.getValue('cooling');
+                                    else if (solarActive) heatStatus = sys.board.valueMaps.heatStatus.getValue('solar');
+                                }
                             }
                             tbody.heatStatus = heatStatus;
                             sys.board.schedules.syncScheduleHeatSourceAndSetpoint(cbody, tbody);
@@ -390,13 +447,14 @@ export class EquipmentStateMessage {
                                 sys.board.circuits.syncCircuitRelayStates();
                                 sys.board.circuits.syncVirtualCircuitStates();
                                 sys.board.valves.syncValveStates();
+                                sys.board.filters.syncFilterStates();
                                 state.emitControllerChange();
                                 state.emitEquipmentChanges();
                                 sys.board.heaters.syncHeaterStates();
                                 break;
                             }
-                        case ControllerType.IntelliCom:
                         case ControllerType.EasyTouch:
+                        case ControllerType.IntelliCom:
                         case ControllerType.IntelliTouch:
                             {
                                 EquipmentStateMessage.processTouchCircuits(msg);
@@ -405,6 +463,7 @@ export class EquipmentStateMessage {
                                 sys.board.features.syncGroupStates();
                                 sys.board.circuits.syncVirtualCircuitStates();
                                 sys.board.valves.syncValveStates();
+                                sys.board.filters.syncFilterStates();
                                 state.emitControllerChange();
                                 state.emitEquipmentChanges();
                                 sys.board.heaters.syncHeaterStates();
@@ -458,7 +517,8 @@ export class EquipmentStateMessage {
                 // pool
                 let tbody: BodyTempState = state.temps.bodies.getItemById(1, true);
                 let cbody: Body = sys.bodies.getItemById(1);
-                tbody.heatMode = cbody.heatMode = msg.extractPayloadByte(5) & 3;
+                // RKS: 02-26-22 - See communications doc for explanation of bits.  This needs to support UltraTemp ETi heatpumps.
+                tbody.heatMode = cbody.heatMode = msg.extractPayloadByte(5) & 0x33;
                 tbody.setPoint = cbody.setPoint = msg.extractPayloadByte(3);
                 tbody.coolSetpoint = cbody.coolSetpoint = msg.extractPayloadByte(9);
                 if (tbody.isOn) tbody.temp = state.temps.waterSensor1;
@@ -466,8 +526,8 @@ export class EquipmentStateMessage {
                 if (cbody.isActive) {
                     // spa
                     tbody = state.temps.bodies.getItemById(2, true);
-                    tbody.heatMode = cbody.heatMode =
-                        (msg.extractPayloadByte(5) & 12) >> 2;
+                    tbody.heatMode = cbody.heatMode = (msg.extractPayloadByte(5) & 0xCC) >> 2;
+                    //tbody.heatMode = cbody.heatMode = (msg.extractPayloadByte(5) & 12) >> 2;
                     tbody.setPoint = cbody.setPoint = msg.extractPayloadByte(4);
                     if (tbody.isOn) tbody.temp = state.temps.waterSensor2 = msg.extractPayloadByte(1);
                 }
@@ -495,8 +555,7 @@ export class EquipmentStateMessage {
                 state.time.date = msg.extractPayloadByte(6);
                 state.time.month = msg.extractPayloadByte(7);
                 state.time.year = msg.extractPayloadByte(8);
-                sys.equipment.controllerFirmware = (msg.extractPayloadByte(42)
-                    + (msg.extractPayloadByte(43) / 1000)).toString();
+                sys.equipment.controllerFirmware = (msg.extractPayloadByte(42) + (msg.extractPayloadByte(43) / 1000)).toString();
                 if (sys.chlorinators.length > 0) {
                     if (msg.extractPayloadByte(37, 255) !== 255) {
                         const chlor = state.chlorinators.getItemById(1);
@@ -508,9 +567,38 @@ export class EquipmentStateMessage {
                     }
                 }
                 ExternalMessage.processFeatureState(9, msg);
+                //if (sys.equipment.dual === true) {
+                //    // For IntelliCenter i10D the body state is on byte 26 of the 204.  This impacts circuit 6.
+                //    let byte = msg.extractPayloadByte(26);
+                //    let pstate = state.circuits.getItemById(6, true);
+                //    let oldstate = pstate.isOn;
+                //    pstate.isOn = ((byte & 0x0010) === 0x0010);
+                //    logger.info(`Checking i10D pool state ${byte} old:${oldstate} new: ${pstate.isOn}`);
+                //    //if (oldstate !== pstate.isOn) {
+                //        state.temps.bodies.getItemById(1, true).isOn = pstate.isOn;
+                //        sys.board.circuits.syncCircuitRelayStates();
+                //        sys.board.circuits.syncVirtualCircuitStates();
+                //        sys.board.valves.syncValveStates();
+                //        sys.board.filters.syncFilterStates();
+                //        sys.board.heaters.syncHeaterStates();
+                //    //}
+                //    if (oldstate !== pstate.isOn) pstate.emitEquipmentChange();
+                //}
+                // At this point normally on is ignored.  Not sure what this does.
+                let cover1 = sys.covers.getItemById(1);
+                let cover2 = sys.covers.getItemById(2);
+                if (cover1.isActive) {
+                    let scover1 = state.covers.getItemById(1, true);
+                    scover1.name = cover1.name;
+                    state.temps.bodies.getItemById(cover1.body + 1).isCovered = scover1.isClosed = (msg.extractPayloadByte(30) & 0x0001) > 0;
+                }
+                if (cover2.isActive) {
+                    let scover2 = state.covers.getItemById(2, true);
+                    scover2.name = cover2.name;
+                    state.temps.bodies.getItemById(cover2.body + 1).isCovered = scover2.isClosed = (msg.extractPayloadByte(30) & 0x0002) > 0;
+                }
                 msg.isProcessed = true;
-                // state.emitControllerChange();
-                // state.emitEquipmentChanges();
+                state.emitEquipmentChanges();
                 break;
         }
     }
@@ -528,13 +616,15 @@ export class EquipmentStateMessage {
                 let circuit = sys.circuits.getItemById(circuitId, false, { isActive: false });
                 if (circuit.isActive !== false) {
                     let cstate = state.circuits.getItemById(circuitId, circuit.isActive);
-                    let isOn = (byte & (1 << j)) > 0;
-                    sys.board.circuits.setEndTime(circuit, cstate, isOn);
+                    // For IntelliCenter i10D body circuits are not reported here.
+                    let isOn = ((circuitId === 6 || circuitId === 1) && sys.equipment.dual === true) ? cstate.isOn : (byte & (1 << j)) > 0;
+                    //let isOn = (byte & (1 << j)) > 0;
                     cstate.isOn = isOn;
                     cstate.name = circuit.name;
                     cstate.nameId = circuit.nameId;
                     cstate.showInFeatures = circuit.showInFeatures;
                     cstate.type = circuit.type;
+                    sys.board.circuits.setEndTime(circuit, cstate, isOn);
                     if (sys.controllerType === ControllerType.IntelliCenter) {
                         // intellitouch sends a separate msg with themes
                         switch (circuit.type) {
@@ -635,7 +725,7 @@ export class EquipmentStateMessage {
                         case 144: // swim
                             sys.board.circuits.sequenceLightGroupAsync(grp.id, 'swim');
                             break;
-                        case 160: // swim
+                        case 160: // set
                             sys.board.circuits.sequenceLightGroupAsync(grp.id, 'set');
                             break;
                         case 190: // save

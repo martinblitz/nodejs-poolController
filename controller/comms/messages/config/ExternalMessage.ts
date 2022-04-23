@@ -17,7 +17,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import { Inbound } from "../Messages";
 import { sys, Body, ICircuitGroup, LightGroup, CircuitGroup } from "../../../Equipment";
 import { state, ICircuitGroupState, LightGroupState } from "../../../State";
-import { utils } from "../../../Constants";
+import { Timestamp, utils } from "../../../Constants";
 import { logger } from "../../../../logger/Logger";
 export class ExternalMessage {
     public static processIntelliCenter(msg: Inbound): void {
@@ -83,7 +83,8 @@ export class ExternalMessage {
         if (isActive) {
             let chem = sys.chemControllers.getItemById(id, true);
             let schem = state.chemControllers.getItemById(id, true);
-            chem.isVirtual = false;
+            // chem.isVirtual = false;
+            chem.master = 0;
             chem.ph.tank.capacity = chem.orp.tank.capacity = 6;
             chem.ph.tank.units = chem.orp.tank.units = '';
             schem.type = chem.type = 2;
@@ -106,7 +107,8 @@ export class ExternalMessage {
         let valve = sys.valves.getItemById(msg.extractPayloadByte(2) + 1);
         valve.circuit = msg.extractPayloadByte(3) + 1;
         valve.name = msg.extractPayloadString(4, 16);
-        valve.isVirtual = false;
+        valve.master = 0;
+        // valve.isVirtual = false;
         msg.isProcessed = true;
     }
     public static processPool(msg: Inbound) {
@@ -215,7 +217,7 @@ export class ExternalMessage {
                     if (group.isActive) {
                         for (let i = 0; i < 16; i++) {
                             let circuitId = msg.extractPayloadByte(i + 6);
-                            let circuit = group.circuits.getItemById(i + 1, circuitId !== 255);
+                            let circuit = group.circuits.getItemById(i + 1, circuitId < 255);
                             if (circuitId === 255) group.circuits.removeItemById(i + 1);
                             circuit.circuit = circuitId + 1;
 
@@ -272,31 +274,30 @@ export class ExternalMessage {
     private static processHeater(msg: Inbound) {
         // So a user is changing the heater info.  Lets
         // hijack it and get it ourselves.
-        let heater = sys.heaters.getItemById(msg.extractPayloadByte(2) + 1);
-        heater.type = msg.extractPayloadByte(3);
-        heater.body = msg.extractPayloadByte(4);
-        heater.cooldownDelay = msg.extractPayloadByte(5);
-        heater.startTempDelta = msg.extractPayloadByte(6);
-        heater.stopTempDelta = msg.extractPayloadByte(7);
-        heater.coolingEnabled = msg.extractPayloadByte(8) > 0;
-        heater.differentialTemp = msg.extractPayloadByte(9);
-        heater.address = msg.extractPayloadByte(10);
-        heater.name = msg.extractPayloadString(11, 16);
-        heater.efficiencyMode = msg.extractPayloadByte(27);
-        heater.maxBoostTemp = msg.extractPayloadByte(28);
-        heater.economyTime = msg.extractPayloadByte(29);
-        if (heater.type === 0) {
-            sys.heaters.removeItemById(heater.id);
-            state.heaters.removeItemById(heater.id);
+        let isActive = msg.extractPayloadByte(3) !== 0;
+        let heaterId = msg.extractPayloadByte(2) + 1;
+        if (isActive) {
+            let heater = sys.heaters.getItemById(heaterId, true);
+            let hstate = state.heaters.getItemById(heater.id, true);
+
+            hstate.type = heater.type = msg.extractPayloadByte(3);
+            heater.body = msg.extractPayloadByte(4);
+            heater.cooldownDelay = msg.extractPayloadByte(5);
+            heater.startTempDelta = msg.extractPayloadByte(6);
+            heater.stopTempDelta = msg.extractPayloadByte(7);
+            heater.coolingEnabled = msg.extractPayloadByte(8) > 0;
+            heater.differentialTemp = msg.extractPayloadByte(9);
+            heater.address = msg.extractPayloadByte(10);
+            hstate.name = heater.name = msg.extractPayloadString(11, 16);
+            heater.efficiencyMode = msg.extractPayloadByte(27);
+            heater.maxBoostTemp = msg.extractPayloadByte(28);
+            heater.economyTime = msg.extractPayloadByte(29);
+            heater.master = 0;
         }
         else {
-            let hstate = state.heaters.getItemById(heater.id, true);
-            hstate.name = heater.name;
-            //heater.isVirtual = hstate.isVirtual = false;
-            hstate.name = heater.name;
-            hstate.type = heater.type;
+            sys.heaters.removeItemById(heaterId);
+            state.heaters.removeItemById(heaterId);
         }
-
         sys.board.heaters.updateHeaterServices();
         // Check anyway to make sure we got it all.
         //setTimeout(() => sys.checkConfiguration(), 500);
@@ -428,13 +429,13 @@ export class ExternalMessage {
                         // [11] = No sequencing underway.
                         switch (byte) {
                             case 0: // Sync
-                                lg.action = 1;
+                                lg.action = sys.board.valueMaps.circuitActions.getValue('colorsync');
                                 break;
                             case 1: // Color swim
-                                lg.action = 3;
+                                lg.action = sys.board.valueMaps.circuitActions.getValue('colorswim');
                                 break;
                             case 2: // Color set
-                                lg.action = 2;
+                                lg.action = sys.board.valueMaps.circuitActions.getValue('colorset');
                                 break;
                             default:
                                 lg.action = 0;
@@ -499,11 +500,14 @@ export class ExternalMessage {
         let startTime = msg.extractPayloadInt(3);
         let endTime = msg.extractPayloadInt(5);
         let circuit = msg.extractPayloadByte(7) + 1;
-        let cfg = sys.schedules.getItemById(schedId, circuit !== 256 && startTime !== 0 && endTime !== 0);
-        cfg.isActive = (circuit !== 256 && startTime !== 0 && endTime !== 0);
+        let isActive = (msg.extractPayloadByte(8) & 128) === 128; // Inactive schedules do not have bit 8 set.
+        let cfg = sys.schedules.getItemById(schedId, isActive);
+        let s = state.schedules.getItemById(schedId, cfg.isActive);
+        //cfg.isActive = (circuit !== 256);
         cfg.startTime = startTime;
         cfg.endTime = endTime;
         cfg.circuit = circuit;
+        cfg.isActive = isActive;
         let byte = msg.extractPayloadByte(8);
         cfg.scheduleType = (byte & 1 & 0xFF) === 1 ? 0 : 128;
         if ((byte & 4 & 0xFF) === 4) cfg.startTimeType = 1;
@@ -524,7 +528,6 @@ export class ExternalMessage {
         cfg.heatSource = hs;
         cfg.heatSetpoint = msg.extractPayloadByte(14);
         cfg.coolSetpoint = msg.extractPayloadByte(15);
-        let s = state.schedules.getItemById(schedId, cfg.isActive);
         if (cfg.isActive) {
             let s = state.schedules.getItemById(schedId, cfg.isActive);
             s.isActive = cfg.isActive = true;
@@ -738,12 +741,16 @@ export class ExternalMessage {
                 sys.general.options.clockMode = (msg.extractPayloadByte(14) & 0x0001) == 1 ? 24 : 12;
                 msg.isProcessed = true;
                 break;
+            case 12: // This is byte 15 but we don't know what it is.  Numbers witnessed include 51, 52, 89, 235.
+                break;
             case 14: // Clock source
                 if ((msg.extractPayloadByte(17) & 0x0040) === 1)
                     sys.general.options.clockSource = 'internet';
                 else if (sys.general.options.clockSource !== 'server')
                     sys.general.options.clockSource = 'manual';
                 msg.isProcessed = true;
+                break;
+            case 15: // This is byte 18 but we don't know what it is.  Numbers witnessed include 1, 2, 3, 5, 100.
                 break;
             case 18: // Body 1 Heat Setpoint
                 body = sys.bodies.getItemById(1, false);
@@ -768,7 +775,7 @@ export class ExternalMessage {
                 break;
             case 21: // Body 2 Cool Setpoint
                 body = sys.bodies.getItemById(2, false);
-                body.setPoint = msg.extractPayloadByte(24);
+                body.coolSetpoint = msg.extractPayloadByte(24);
                 state.temps.bodies.getItemById(2).coolSetpoint = body.coolSetpoint;
                 state.emitEquipmentChanges();
                 msg.isProcessed = true;
@@ -815,6 +822,19 @@ export class ExternalMessage {
                 break;
             case 37: // Manual Heat
                 sys.general.options.manualHeat = msg.extractPayloadByte(40) !== 0;
+                msg.isProcessed = true;
+                break;
+            case 64: // Vacation mode
+                let yy = msg.extractPayloadByte(5) + 2000;
+                let mm = msg.extractPayloadByte(6);
+                let dd = msg.extractPayloadByte(7);
+                sys.general.options.vacation.startDate = new Date(yy, mm - 1, dd);
+                yy = msg.extractPayloadByte(8) + 2000;
+                mm = msg.extractPayloadByte(9);
+                dd = msg.extractPayloadByte(10);
+                sys.general.options.vacation.endDate = new Date(yy, mm - 1, dd);
+                sys.general.options.vacation.enabled = msg.extractPayloadByte(3) > 0;
+                sys.general.options.vacation.useTimeframe = msg.extractPayloadByte(4) > 0;
                 msg.isProcessed = true;
                 break;
         }

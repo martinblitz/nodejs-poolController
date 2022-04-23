@@ -29,8 +29,10 @@ export class DataLogger {
             }
             let arr: T[] = [];
             for (let i = 0; i < lines.length; i++) {
-                let entry = DataLogger.createEntry<T>(type, lines[i]);
-                arr.push(entry);
+                try {
+                    let entry = DataLogger.createEntry<T>(type, lines[i]);
+                    arr.push(entry);
+                } catch (err) { logger.error(`Skipping invalid dose history entry: ${err.message}`); }
             }
             return arr;
         } catch (err) { logger.error(err); }
@@ -47,6 +49,7 @@ export class DataLogger {
             let newLines = ['\r', '\n'];
             let arr: T[] = [];
             if (fs.existsSync(logPath)) {
+                console.log(`Reading logfile ${logPath}`);
                 // Alright what we have created here is a method to read the data from the end of 
                 // a log file in reverse order (tail) that works for all os implementations.  It is
                 // really dumb that this isn't part of the actual file processing.
@@ -81,15 +84,16 @@ export class DataLogger {
                                 // record then we shoud save off the line and read the next record.
                                 if (newLines.includes(char) || pos === 0) {
                                     if (chars.length > 0) {
-                                        let entry = DataLogger.createEntry<T>(type, chars.join(''));
-                                        if (typeof fn === 'function') {
-                                            let rc = fn(arr.length + 1, entry, arr);
-                                            console.log(rc);
-                                            if (rc === true) arr.push(entry);
-                                            else if (rc === false) break;
-                                        }
-                                        else
-                                            arr.push(entry);
+                                        try {
+                                            let entry = DataLogger.createEntry<T>(type, chars.join(''));
+                                            if (typeof fn === 'function') {
+                                                let rc = fn(arr.length + 1, entry, arr);
+                                                if (rc === true) arr.push(entry);
+                                                else if (rc === false) break;
+                                            }
+                                            else
+                                                arr.push(entry);
+                                        } catch (err) { logger.error(`Skipping invalid dose history entry: ${err.message}`); }
                                     }
                                     chars = [];
                                 }
@@ -142,14 +146,16 @@ export class DataLogger {
                                     // record then we shoud save off the line and read the next record.
                                     if (newLines.includes(char) || pos === 0) {
                                         if (chars.length > 0) {
-                                            let entry = DataLogger.createEntry<T>(type, chars.join(''));
-                                            if (typeof fn === 'function') {
-                                                let rc = fn(arr.length + 1, entry, arr);
-                                                if (rc === true) arr.push(entry);
-                                                else if (rc === false) break;
-                                            }
-                                            else
-                                                arr.push(entry);
+                                            try {
+                                                let entry = DataLogger.createEntry<T>(type, chars.join(''));
+                                                if (typeof fn === 'function') {
+                                                    let rc = fn(arr.length + 1, entry, arr);
+                                                    if (rc === true) arr.push(entry);
+                                                    else if (rc === false) break;
+                                                }
+                                                else
+                                                    arr.push(entry);
+                                            } catch (err) { logger.error(`Skipping invalid dose history entry: ${err.message}`); }
                                         }
                                         chars = [];
                                     }
@@ -276,7 +282,6 @@ export class DataLogger {
                                             let entry = DataLogger.createEntry<T>(type, chars.join(''));
                                             if (typeof fn === 'function') {
                                                 let rc = fn(arr.length + 1, entry, arr);
-                                                console.log(rc);
                                                 if (rc === true) arr.push(entry);
                                                 else if (rc === false) break;
                                             }
@@ -399,11 +404,21 @@ export class DataLoggerEntry {
         // Parse the data from the log entry if it exists.
         if (typeof entry === 'object') entry = JSON.stringify(entry);
         if (typeof entry === 'string') this.parse(entry);
+        else {
+            //console.log(`A DATALOGGER ENTRY DOES NOT HAVE A PROPER TYPE ${typeof entry} *************************************`);
+            //console.log(entry);
+        }
     }
-    public createInstance(entry?: string) { return new DataLoggerEntry(entry); }
+    public static createInstance(entry?: string) { return new DataLoggerEntry(entry); }
     public parse(entry: string) {
         let obj = typeof entry !== 'undefined' ? JSON.parse(entry, this.dateParser) : {};
-        extend(true, this, obj);
+        if (typeof entry === 'undefined') {
+            console.log(`A DATALOGGER ENTRY WAS NOT DEFINED *************************`);
+        }
+        else if (entry === '') {
+            console.log(`THE INCOMING DATALOGGER ENTRY WAS EMPTY ***************************`)
+        }
+        let o = extend(true, this, obj);
     }
     protected dateParser(key, value) {
         if (typeof value === 'string') {

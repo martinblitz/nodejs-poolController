@@ -92,9 +92,21 @@ export class OptionsMessage {
                             //body = sys.bodies.getItemById(4, sys.equipment.maxBodies > 3);
                             //body.heatMode = msg.extractPayloadByte(27);
                             //body.heatSetpoint = msg.extractPayloadByte(23);
+                            msg.isProcessed = true;
                             break;
                         }
-                    case 1: // Unknown
+                    case 1: // Vacation mode
+                        let yy = msg.extractPayloadByte(4) + 2000;
+                        let mm = msg.extractPayloadByte(5);
+                        let dd = msg.extractPayloadByte(6);
+                        sys.general.options.vacation.startDate = new Date(yy, mm - 1, dd);
+                        yy = msg.extractPayloadByte(7) + 2000;
+                        mm = msg.extractPayloadByte(8);
+                        dd = msg.extractPayloadByte(9);
+                        sys.general.options.vacation.endDate = new Date(yy, mm - 1, dd);
+                        sys.general.options.vacation.enabled = msg.extractPayloadByte(2) > 0;
+                        sys.general.options.vacation.useTimeframe = msg.extractPayloadByte(3) > 0;
+                        msg.isProcessed = true;
                         break;
                 }
                 msg.isProcessed = true;
@@ -127,16 +139,22 @@ export class OptionsMessage {
                 break;
             }
             case 40:
+            case 168:    
+            {
+
                 // [165,33,16,34,168,10],[0,0,0,254,0,0,0,0,0,0],[2,168 = manual heat mode off
                 // [165,33,16,34,168,10],[0,0,0,254,1,0,0,0,0,0],[2,169] = manual heat mode on
                 sys.general.options.manualHeat = msg.extractPayloadByte(4) === 1;
+                // From https://github.com/tagyoureit/nodejs-poolController/issues/362 = Intellitouch
+                // [0,0,0,0,1,x,0,0,0,0]  x=0 Manual OP heat Off; x=1 Manual OP heat On 
+                sys.general.options.manualPriority = msg.extractPayloadByte(5) === 1;
                 if ((msg.extractPayloadByte(3) & 0x01) === 1) {
                     // only support for 1 ic with EasyTouch
                     let chem = sys.chemControllers.getItemByAddress(144, true);
-                    let schem = state.chemControllers.getItemById(chem.id, true);
+                    //let schem = state.chemControllers.getItemById(chem.id, true);
                     chem.ph.tank.capacity = chem.orp.tank.capacity = 6;
                     chem.ph.tank.units = chem.orp.tank.units = '';
-
+                    
                 }
                 else {
                     let chem = sys.chemControllers.getItemByAddress(144);
@@ -145,6 +163,7 @@ export class OptionsMessage {
                 }
                 msg.isProcessed = true;
                 break;
+            }
         }
     }
 }

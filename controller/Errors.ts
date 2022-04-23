@@ -96,20 +96,41 @@ export class InvalidEquipmentDataError extends EquipmentError {
     }
     public eqData;
 }
+export class ServiceProcessError extends ApiError {
+    constructor(message: string, serviceName: string, process?: string) {
+        super(message, 290, 400);
+        this.name = 'ServiceProcessError';
+        this.service = serviceName;
+        this.process = process;
+    }
+    public process: string;
+    public service: string;
+}
 export class ServiceParameterError extends ApiError {
     constructor(message: string, serviceName: string, paramName: string, value) {
         super(message, 280, 400);
         this.name = 'InvalidServiceParameter';
+        
         this.value = value;
-        this.parameter = value;
+        this.parameter = paramName;
+        this.service = serviceName;
     }
     public value;
     public parameter: string;
+    public service: string;
 }
 export class InvalidOperationError extends ApiError {
     constructor(message: string, operation: string) {
         super(message, 100, 400);
         this.name = 'InvalidOperation';
+        this.operation = operation;
+    }
+    public operation: string;
+}
+export class EquipmentTimeoutError extends ApiError {
+    constructor(message: string, operation: string) {
+        super(message, 100, 400);
+        this.name = 'TimeoutError';
         this.operation = operation;
     }
     public operation: string;
@@ -123,6 +144,16 @@ export class ParameterOutOfRangeError extends InvalidOperationError {
     public value;
     public parameter: string;
 }
+export class BoardProcessError extends ApiError {
+    constructor(message: string, process?: string) {
+        super(message, 300, 400);
+        this.name = 'ProcessingError';
+        this.process = process;
+    }
+    public process: string;
+    
+}
+
 export class MessageError extends ApiError {
     constructor(msg: Message, message: string, code?: number, httpCode?: number) {
         super(message, code, httpCode);

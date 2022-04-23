@@ -23,7 +23,7 @@ export class NixieCircuitCollection extends NixieEquipmentCollection<NixieCircui
             }
         } catch (err) { return Promise.reject(`Nixie Control Panel deleteCircuitAsync ${err.message}`); }
     }
-    public async sendOnOffSequenceAsync(id: number, count: number) {
+    public async sendOnOffSequenceAsync(id: number, count: number | { isOn: boolean, timeout: number }[]) {
         try {
             let c: NixieCircuit = this.find(elem => elem.id === id) as NixieCircuit;
             if (typeof c === 'undefined') return Promise.reject(new Error(`NCP: Circuit ${id} could not be found to send sequence ${count}.`));
@@ -55,6 +55,12 @@ export class NixieCircuitCollection extends NixieEquipmentCollection<NixieCircui
             }
         }
         catch (err) { logger.error(`setCircuitAsync: ${err.message}`); return Promise.reject(err); }
+    }
+    public async checkCircuitEggTimerExpirationAsync(cstate: ICircuitState) {
+     try {
+        let c: NixieCircuit = this.find(elem => elem.id === cstate.id) as NixieCircuit;
+        await c.checkCircuitEggTimerExpirationAsync(cstate);
+    } catch (err) { logger.error(`NCP: Error synching circuit states: ${err}`); }
     }
     public async initAsync(circuits: CircuitCollection) {
         try {
@@ -112,6 +118,10 @@ export class NixieCircuit extends NixieEquipment {
     constructor(ncp: INixieControlPanel, circuit: Circuit) {
         super(ncp);
         this.circuit = circuit;
+        // Clear out the delays.
+        let cstate = state.circuits.getItemById(circuit.id);
+        cstate.startDelay = false;
+        cstate.stopDelay = false;
     }
     public get id(): number { return typeof this.circuit !== 'undefined' ? this.circuit.id : -1; }
     public get eggTimerOff(): Timestamp { return typeof this.timeOn !== 'undefined' && !this.circuit.dontStop ? this.timeOn.clone().addMinutes(this.circuit.eggTimer) : undefined; }
@@ -121,23 +131,48 @@ export class NixieCircuit extends NixieEquipment {
         }
         catch (err) { logger.error(`Nixie setCircuitAsync: ${err.message}`); return Promise.reject(err); }
     }
-    public async sendOnOffSequenceAsync(count: number, timeout?:number): Promise<InterfaceServerResponse> {
+    public async sendOnOffSequenceAsync(count: number | { isOn: boolean, timeout: number }[], timeout?:number): Promise<InterfaceServerResponse> {
         try {
             this._sequencing = true;
             let arr = [];
-            let t = typeof timeout === 'undefined' ? 100 : timeout;
-            arr.push({ isOn: true, timeout: t }); // This may not be needed but we always need to start from on.
-            //[{ isOn: true, timeout: 1000 }, { isOn: false, timeout: 1000 }]
-            for (let i = 0; i < count; i++) {
-                arr.push({ isOn: false, timeout: t });
-                arr.push({ isOn: true, timeout: t });
+            if (typeof count === 'number') {
+                let t = typeof timeout === 'undefined' ? 100 : timeout;
+                arr.push({ isOn: false, timeout: t }); // This may not be needed but we always need to start from off.
+                //[{ isOn: true, timeout: 1000 }, { isOn: false, timeout: 1000 }]
+                for (let i = 0; i < count; i++) {
+                    arr.push({ isOn: true, timeout: t });
+                    if (i < count - 1) arr.push({ isOn: false, timeout: t });
+                }
             }
+            else arr = count;
+            // The documentation for IntelliBrite is incorrect.  The sequence below will give us Party mode.
+            // Party mode:2
+            // Start: Off
+            // On
+            // Off
+            // On
+            // According to the docs this is the sequence they lay out.
+            // Party mode:2
+            // Start: On
+            // Off
+            // On
+            // Off
+            // On
+
             let res = await NixieEquipment.putDeviceService(this.circuit.connectionId, `/state/device/${this.circuit.deviceBinding}`, arr, 60000);
             return res;
         } catch (err) { logger.error(`Nixie: Error sending circuit sequence ${this.id}: ${count}`); }
         finally { this._sequencing = false; }
     }
-    public async setCircuitStateAsync(cstate: ICircuitState, val: boolean, scheduled: boolean = false) : Promise<InterfaceServerResponse> {
+    public async setThemeAsync(cstate: ICircuitState, theme: number): Promise<InterfaceServerResponse> {
+        try {
+            
+
+
+            return new InterfaceServerResponse(200, 'Sucess');
+        } catch (err) { logger.error(`Nixie: Error setting light theme ${cstate.id}-${cstate.name} to ${theme}`); }
+    }
+    public async setCircuitStateAsync(cstate: ICircuitState, val: boolean, scheduled: boolean = false): Promise<InterfaceServerResponse> {
         try {
             if (val !== cstate.isOn) {
                 logger.info(`NCP: Setting Circuit ${cstate.name} to ${val}`);
@@ -149,19 +184,34 @@ export class NixieCircuit extends NixieEquipment {
                 // Check to see if we should be on by poking the schedules.
             }
             if (utils.isNullOrEmpty(this.circuit.connectionId) || utils.isNullOrEmpty(this.circuit.deviceBinding)) {
+                sys.board.circuits.setEndTime(sys.circuits.getInterfaceById(cstate.id), cstate, val);
                 cstate.isOn = val;
                 return new InterfaceServerResponse(200, 'Success');
             }
             if (this._sequencing) return new InterfaceServerResponse(200, 'Success');
             let res = await NixieEquipment.putDeviceService(this.circuit.connectionId, `/state/device/${this.circuit.deviceBinding}`, { isOn: val, latch: val ? 10000 : undefined });
             if (res.status.code === 200) {
-                cstate.isOn = val;
+                sys.board.circuits.setEndTime(sys.circuits.getInterfaceById(cstate.id), cstate, val);
                 // Set this up so we can process our egg timer.
-                if (!cstate.isOn && val) { this.timeOn = new Timestamp(); }
-                else if (!val) this.timeOn = undefined;
+                //if (!cstate.isOn && val) { cstate.startTime = this.timeOn = new Timestamp(); }
+                //else if (!val) cstate.startTime = this.timeOn = undefined;
+                cstate.isOn = val;
             }
             return res;
         } catch (err) { logger.error(`Nixie: Error setting circuit state ${cstate.id}-${cstate.name} to ${val}`); }
+    }
+    public async checkCircuitEggTimerExpirationAsync(cstate: ICircuitState) {
+        // if circuit end time is past current time, either the schedule is finished
+        // (this should already be turned off) or the egg timer has expired
+        try {
+            if (!cstate.isActive || !cstate.isOn) return;
+            if (typeof cstate.endTime !== 'undefined') {
+                if (cstate.endTime.toDate() < new Timestamp().toDate()) {
+                    await sys.board.circuits.setCircuitStateAsync(cstate.id, false);
+                    cstate.emitEquipmentChange();
+                }
+            }
+        } catch (err) { logger.error(`Error syncing circuit: ${err}`); }
     }
     private async checkHardwareStatusAsync(connectionId: string, deviceBinding: string) {
         try {
@@ -187,6 +237,8 @@ export class NixieCircuit extends NixieEquipment {
     public async closeAsync() {
         try {
             let cstate = state.circuits.getItemById(this.circuit.id);
+            cstate.stopDelay = false;
+            cstate.startDelay = false;
             await this.setCircuitStateAsync(cstate, false);
             cstate.emitEquipmentChange();
         }

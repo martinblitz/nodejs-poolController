@@ -63,8 +63,11 @@
         {
           "topic": "state/mode",
           "message": "@bind=data.mode;"
+        },
+        {
+          "topic": "state/startTime",
+          "message": "@bind=data.startTime;"
         }
-
       ]
     },
     {
@@ -87,6 +90,11 @@
           "description": "The type of circuit we are dealing with."
         },
         {
+          "topic": "state/circuits/@bind=data.id;/endTime",
+          "message": "@bind=data.endTime;",
+          "description": "The end time for the circuit."
+        },
+        {
           "topic": "state/circuits/@bind=data.id;/lightingTheme",
           "message": "@bind=data.lightingTheme;",
           "description": "Bind the lighting theme to the topic.",
@@ -95,7 +103,12 @@
         {
           "topic": "state/circuits/@bind=data.id;/showInFeatures",
           "message": "@bind=data.showInFeatures;",
-          "description": "Indicates wether the item should show in features."
+          "description": "Indicates whether the item should show in features."
+        },
+        {
+          "topic": "state/circuits/@bind=data.id;/endTime",
+          "message": "@bind=data.endTime;",
+          "description": "Indicates end time for a circuit (when it will turn off)."
         }
       ]
     },
@@ -114,6 +127,11 @@
           "description": "Bind the on/off status to the topic."
         },
         {
+          "topic": "state/features/@bind=data.id;/endTime",
+          "message": "@bind=data.endTime;",
+          "description": "The end time for the feature."
+        },
+        {
           "topic": "state/features/@bind=data.id;/type",
           "message": "@bind=data.type;",
           "description": "The type of feature we are dealing with."
@@ -121,7 +139,12 @@
         {
           "topic": "state/features/@bind=data.id;/showInFeatures",
           "message": "@bind=data.showInFeatures;",
-          "description": "Indicates wether the item should show in features."
+          "description": "Indicates whether the item should show in features."
+        },
+        {
+          "topic": "state/features/@bind=data.id;/endTime",
+          "message": "@bind=data.endTime;",
+          "description": "Indicates end time for a features (when it will turn off)."
         }
       ]
     },
@@ -150,6 +173,10 @@
         {
           "topic": "state/lightGroups/@bind=data.id;/type",
           "message": "@bind=data.type;"
+        },
+        {
+          "topic": "state/lightGroups/@bind=data.id;/endTime",
+          "message": "@bind=data.endTime;"
         }
       ]
     },
@@ -174,7 +201,12 @@
         {
           "topic": "state/circuitGroups/@bind=data.id;/showInFeatures",
           "message": "@bind=data.showInFeatures;",
-          "description": "Indicates wether the item should show in features."
+          "description": "Indicates whether the item should show in features."
+        },
+        {
+          "topic": "state/circuitGroups/@bind=data.id;/endTime",
+          "message": "@bind=data.showInFeatures;",
+          "description": "Indicates end time for the circuitGroup (when it will turn off)."
         }
 
       ]
@@ -264,6 +296,48 @@
           "filter": "@bind=typeof data.solar !== 'undefined';"
         },
         {
+          "topic": "state/temps/solarSensor2",
+          "message": "@bind=data.solarSensor2;",
+          "description": "Solar temp",
+          "filter": "@bind=typeof data.solarSensor2 !== 'undefined';"
+        },
+        {
+          "topic": "state/temps/solarSensor3",
+          "message": "@bind=data.solarSensor3;",
+          "description": "Solar temp",
+          "filter": "@bind=typeof data.solarSensor3 !== 'undefined';"
+        },
+        {
+          "topic": "state/temps/solarSensor4",
+          "message": "@bind=data.solarSensor4;",
+          "description": "Solar temp",
+          "filter": "@bind=typeof data.solarSensor4 !== 'undefined';"
+        },
+        {
+          "topic": "state/temps/waterSensor1",
+          "message": "@bind=data.waterSensor1;",
+          "description": "Water temp sensor 1",
+          "filter": "@bind=typeof data.waterSensor1 !== 'undefined';"
+        },
+        {
+          "topic": "state/temps/waterSensor2",
+          "message": "@bind=data.waterSensor2;",
+          "description": "Water temp sensor 2",
+          "filter": "@bind=typeof data.waterSensor2 !== 'undefined';"
+        },
+        {
+          "topic": "state/temps/waterSensor3",
+          "message": "@bind=data.waterSensor3;",
+          "description": "Water temp sensor 3",
+          "filter": "@bind=typeof data.waterSensor3 !== 'undefined';"
+        },
+        {
+          "topic": "state/temps/waterSensor4",
+          "message": "@bind=data.waterSensor4;",
+          "description": "Water temp sensor 4",
+          "filter": "@bind=typeof data.waterSensor4 !== 'undefined';"
+        },
+        {
           "topic": "state/temps/units",
           "message": "@bind=data.units;"
         }
@@ -308,6 +382,11 @@
           "topic": "state/temps/bodies/@bind=data.id;/setPoint",
           "message": "@bind=data.setPoint;",
           "description": "Setpoint."
+        },
+        {
+          "topic": "state/temps/bodies/@bind=data.id;/coolSetpoint",
+          "message": "@bind=data.coolSetpoint;",
+          "description": "Cool setpoint."
         },
         {
           "topic": "state/temps/bodies/@bind=data.id;/temp",
@@ -371,14 +450,14 @@
           "description": "Send type."
         },
         {
+          "topic": "state/chlorinators/@bind=data.id;/model",
+          "message": "@bind=data.model;",
+          "description": "Send Model"
+        },
+        {
           "topic": "state/chlorinators/@bind=data.id;/targetOutput",
           "message": "@bind=data.targetOutput;",
           "description": "Send targetOutput."
-        },
-        {
-          "topic": "state/chlorinators/@bind=data.id;/virtualControllerStatus",
-          "message": "@bind=data.virtualControllerStatus;",
-          "description": "Send virtualControllerStatus."
         }
       ]
     },
@@ -509,8 +588,12 @@
           "message": "@bind=vars.cfg.borates;"
         },
         {
-          "topic": "state/chemControllers/@bind=data.id;/virtualControllerStatus",
-          "message": "@bind=data.virtualControllerStatus;"
+          "topic": "state/chemControllers/@bind=data.id;/@bind=data.name;/acidDemand",
+          "message": "@bind=data.ph.demand;"
+        },
+        {
+          "topic": "state/chemControllers/@bind=data.id;/@bind=data.name;/orpDemand",
+          "message": "@bind=data.orp.demand;"
         },
         {
           "topic": "state/chemControllers/@bind=data.id;/alarms/flow",
@@ -563,6 +646,79 @@
         {
           "topic": "state/chemControllers/@bind=data.id;/warnings/chlorinatorCommError",
           "message": "@bind=data.warnings.chlorinatorCommError;"
+        }
+      ]
+    },
+    {
+      "name": "chemicalDose",
+      "description": "Event when a chemical is being dosed",
+      "topics": [
+        {
+          "topic": "state/chemControllers/@bind=data.id;/@bind=data.chem;",
+          "message": "@bind=data;",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "filter",
+      "description": "Populate the filter topic",
+      "topics": [
+        {
+          "topic": "state/filters/@bind=data.id;/name",
+          "message": "@bind=data.name;",
+          "description": "Bind the name topic."
+        },
+        {
+          "topic": "state/filters/@bind=data.id;/isOn",
+          "message": "@bind=data.currentOutput > 0;",
+          "description": "Bind 'on'/'off' as a message to the state topic."
+        },
+        {
+          "topic": "state/filters/@bind=data.id;/body",
+          "message": "@bind=data.body.desc;",
+          "description": "Send body description."
+        },
+        {
+          "topic": "state/filters/@bind=data.id;/cleanPercentage",
+          "message": "@bind=data.cleanPercentage;",
+          "description": "Send clean percentage."
+        },
+        {
+          "topic": "state/filters/@bind=data.id;/filterType",
+          "message": "@bind=data.filterType.desc;",
+          "description": "Send filter type."
+        },
+        {
+          "topic": "state/filters/@bind=data.id;/pressure",
+          "message": "@bind=data.pressure;",
+          "description": "Send pressure."
+        },
+        {
+          "topic": "state/filters/@bind=data.id;/pressureUnits",
+          "message": "@bind=data.pressureUnits.desc;",
+          "description": "Send pressure units."
+        },
+        {
+          "topic": "state/filters/@bind=data.id;/refPressure",
+          "message": "@bind=data.refPressure;",
+          "description": "Send reference pressure."
+        }
+      ]
+    },
+    {
+      "name": "cover",
+      "description": "Populate the cover topic",
+      "topics": [
+        {
+          "topic": "state/covers/@bind=data.id;/name",
+          "message": "@bind=data.name;",
+          "description": "Bind the name topic."
+        },
+        {
+          "topic": "state/covers/@bind=data.id;/isClosed",
+          "message": "@bind=data.isClosed;",
+          "description": "Bind isClosed as a message to the state topic."
         }
       ]
     },

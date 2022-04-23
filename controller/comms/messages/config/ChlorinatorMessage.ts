@@ -27,15 +27,19 @@ export class ChlorinatorMessage {
                 chlorId = 1;
                 for (let i = 0; i < 4 && i + 30 < msg.payload.length; i++) {
                     let isActive = msg.extractPayloadByte(i + 22) === 1;
+                    chlor = sys.chlorinators.getItemById(chlorId);
+                    if (chlor.master !== 0) continue; // RSG: probably never need this.  See Touch chlor below.
                     if (isActive) {
-                        let chlor = sys.chlorinators.getItemById(chlorId, true);
+                        chlor = sys.chlorinators.getItemById(chlorId, true);
                         let schlor = state.chlorinators.getItemById(chlor.id, true);
                         chlor.isActive = schlor.isActive = true;
                         chlor.body = msg.extractPayloadByte(i + 2);
                         chlor.type = msg.extractPayloadByte(i + 6);
-                        if (!chlor.disabled) {
+                        if (!chlor.disabled && !chlor.isDosing) {
                             // RKS: We don't want to change the setpoints if our chem controller disabled
                             // the chlorinator.  These should be 0.
+                            if (msg.extractPayloadByte(i + 10) === 0 && chlor.poolSetpoint > 0) logger.info(`Changing pool setpoint to 0 ${msg.extractPayloadByte(i + 10)}`);
+
                             chlor.poolSetpoint = msg.extractPayloadByte(i + 10);
                             chlor.spaSetpoint = msg.extractPayloadByte(i + 14);
                         }
@@ -47,6 +51,7 @@ export class ChlorinatorMessage {
                         schlor.poolSetpoint = chlor.poolSetpoint;
                         schlor.spaSetpoint = chlor.spaSetpoint;
                         schlor.type = chlor.type;
+                        schlor.model = chlor.model;
                         schlor.isActive = chlor.isActive;
                         schlor.superChlorHours = chlor.superChlorHours;
                         state.emitEquipmentChanges();
@@ -57,6 +62,7 @@ export class ChlorinatorMessage {
                     }
                     chlorId++;
                 }
+                msg.isProcessed = true;
                 break;
             default:
                 logger.debug(`Unprocessed Config Message ${msg.toPacket()}`)
@@ -64,7 +70,10 @@ export class ChlorinatorMessage {
         }
     }
     public static processTouch(msg: Inbound) {
+        //[255, 0, 255][165, 1, 15, 16, 25, 22][1, 90, 128, 58, 128, 0, 73, 110, 116, 101, 108, 108, 105, 99, 104, 108, 111, 114, 45, 45, 54, 48][8, 50]
         // This is for the 25 message that is broadcast from the OCP.
+        let chlor = sys.chlorinators.getItemById(1);
+        if (chlor.master !== 0) return;  // Some Aquarite chlors need more frequent control (via Nixie) but will be disabled via Touch.  https://github.com/tagyoureit/nodejs-poolController/issues/349
         let isActive = (msg.extractPayloadByte(0) & 0x01) === 1;
         if (isActive) {
             let chlor = sys.chlorinators.getItemById(1, true);
@@ -78,7 +87,9 @@ export class ChlorinatorMessage {
                 chlor.address = chlor.id + 79;
                 schlor.body = chlor.body = sys.equipment.maxBodies >= 1 || sys.equipment.shared === true ? 32 : 0;
             }
-            schlor.name = chlor.name = msg.extractPayloadString(6, 16);
+            if (typeof chlor.name === 'undefined') schlor.name = chlor.name = msg.extractPayloadString(6, 16);
+            if (typeof chlor.model === 'undefined') chlor.model  = sys.board.valueMaps.chlorinatorModel.getValue(schlor.name.toLowerCase()); 
+            if (typeof chlor.type === 'undefined') chlor.type = schlor.type = 0; 
             schlor.saltLevel = msg.extractPayloadByte(3) * 50 || schlor.saltLevel;
             schlor.status = msg.extractPayloadByte(4) & 0x007F; // Strip off the high bit.  The chlorinator does not actually report this.;
             // Pull the hours from the 25 message.
@@ -109,5 +120,6 @@ export class ChlorinatorMessage {
             sys.chlorinators.removeItemById(1);
             state.chlorinators.removeItemById(1);
         }
+        msg.isProcessed = true;
     }
 }

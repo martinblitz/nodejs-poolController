@@ -119,6 +119,7 @@ export class NixieSchedule extends NixieEquipment {
             // user resets the schedule by turning the circuit back on again then the schedule will resume and turn off at the specified
             // time.
             // 6. Heat setpoints should only be changed when the schedule is first turning on the scheduled circuit.
+            // 7. If schedule is disabled, skip it
             let cstate = state.circuits.getInterfaceById(this.schedule.circuit, false);
             let circuit = sys.circuits.getInterfaceById(this.schedule.circuit, false, { isActive: false });
             if (circuit.isActive === false) {
@@ -141,8 +142,9 @@ export class NixieSchedule extends NixieEquipment {
                 let body = sys.bodies.find(elem => elem.circuit === circuit.id);
                 if (typeof body !== 'undefined') {
                     let heatSource = sys.board.valueMaps.heatSources.transform(this.schedule.heatSource);
-                    if (heatSource !== 'nochange') {
+                    if (heatSource.name !== 'nochange') {
                         switch (heatSource.name) {
+                            case 'nochange':
                             case 'dontchange':
                                 break;
                             case 'off':
@@ -192,6 +194,7 @@ export class NixieSchedule extends NixieEquipment {
     }
     protected shouldBeOn(sstate: ScheduleState): boolean {
         if (this.schedule.isActive === false) return false;
+        if (this.schedule.disabled) return false;
         // Be careful with toDate since this returns a mutable date object from the state timestamp.  startOfDay makes it immutable.
         let sod = state.time.startOfDay()
         let dow = sod.toDate().getDay();
@@ -211,7 +214,7 @@ export class NixieSchedule extends NixieEquipment {
         // [0, {name: 'manual', desc: 'Manual }]
         // [1, { name: 'sunrise', desc: 'Sunrise' }],
         // [2, { name: 'sunset', desc: 'Sunset' }]
-        let tmStart = this.calcTime(sod, this.schedule.startTime, this.schedule.startTime).getTime();
+        let tmStart = this.calcTime(sod, this.schedule.startTimeType, this.schedule.startTime).getTime();
         let tmEnd = this.calcTime(sod, this.schedule.endTimeType, this.schedule.endTime).getTime();
        
         if (isNaN(tmStart)) return false;
@@ -225,7 +228,7 @@ export class NixieSchedule extends NixieEquipment {
         return true;
     }
     public async closeAsync() {
-        try {
+        try{
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
         }
@@ -233,7 +236,7 @@ export class NixieSchedule extends NixieEquipment {
     }
     public logData(filename: string, data: any) { this.controlPanel.logData(filename, data); }
 }
-class NixieScheduleContext {
+class   NixieScheduleContext {
     constructor() {
 
     }

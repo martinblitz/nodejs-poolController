@@ -17,13 +17,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import * as extend from 'extend';
 import { EventEmitter } from 'events';
 import { SystemBoard, byteValueMap, byteValueMaps, ConfigQueue, ConfigRequest, CircuitCommands, FeatureCommands, ChlorinatorCommands, PumpCommands, BodyCommands, ScheduleCommands, HeaterCommands, EquipmentIdRange, ValveCommands, SystemCommands, ChemControllerCommands } from './SystemBoard';
-import { PoolSystem, Body, Schedule, Pump, ConfigVersion, sys, Heater, ICircuitGroup, LightGroupCircuit, LightGroup, ExpansionPanel, ExpansionModule, ExpansionModuleCollection, Valve, General, Options, Location, Owner, ICircuit, Feature, CircuitGroup, ChemController, TempSensorCollection } from '../Equipment';
+import { PoolSystem, Body, Schedule, Pump, ConfigVersion, sys, Heater, ICircuitGroup, LightGroupCircuit, LightGroup, ExpansionPanel, ExpansionModule, ExpansionModuleCollection, Valve, General, Options, Location, Owner, ICircuit, Feature, CircuitGroup, ChemController, TempSensorCollection, Chlorinator } from '../Equipment';
 import { Protocol, Outbound, Inbound, Message, Response } from '../comms/messages/Messages';
 import { conn } from '../comms/Comms';
 import { logger } from '../../logger/Logger';
 import { state, ChlorinatorState, LightGroupState, VirtualCircuitState, ICircuitState, BodyTempState, CircuitGroupState, ICircuitGroupState, ChemControllerState } from '../State';
 import { utils } from '../../controller/Constants';
-import { InvalidEquipmentIdError, InvalidEquipmentDataError, EquipmentNotFoundError, MessageError } from '../Errors';
+import { InvalidEquipmentIdError, InvalidEquipmentDataError, EquipmentNotFoundError, MessageError, InvalidOperationError } from '../Errors';
 import { ncp } from '../nixie/Nixie';
 export class IntelliCenterBoard extends SystemBoard {
     public needsConfigChanges: boolean = false;
@@ -38,33 +38,41 @@ export class IntelliCenterBoard extends SystemBoard {
         this.equipmentIds.features.start = 129;
         this.equipmentIds.circuitGroups.start = 193;
         this.equipmentIds.virtualCircuits.start = 237;
+        this.valueMaps.panelModes = new byteValueMap([
+            [0, { val: 0, name: 'auto', desc: 'Auto' }],
+            [1, { val: 1, name: 'service', desc: 'Service' }],
+            [8, { val: 8, name: 'freeze', desc: 'Freeze' }],
+            [255, { name: 'error', desc: 'System Error' }]
+        ]);
         this.valueMaps.circuitFunctions = new byteValueMap([
             [0, { name: 'generic', desc: 'Generic' }],
             [1, { name: 'spillway', desc: 'Spillway' }],
-            [2, { name: 'mastercleaner', desc: 'Master Cleaner' }],
+            [2, { name: 'mastercleaner', desc: 'Master Cleaner', body: 1 }],
             [3, { name: 'chemrelay', desc: 'Chem Relay' }],
             [4, { name: 'light', desc: 'Light', isLight: true }],
-            [5, { name: 'intellibrite', desc: 'Intellibrite', isLight: true }],
-            [6, { name: 'globrite', desc: 'GloBrite', isLight: true }],
+            [5, { name: 'intellibrite', desc: 'Intellibrite', isLight: true, theme: 'intellibrite' }],
+            [6, { name: 'globrite', desc: 'GloBrite', isLight: true, theme: 'intellibrite' }],
             [7, { name: 'globritewhite', desc: 'GloBrite White', isLight: true }],
-            [8, { name: 'magicstream', desc: 'Magicstream', isLight: true }],
+            [8, { name: 'magicstream', desc: 'Magicstream', isLight: true, theme: 'intellibrite' }],
             [9, { name: 'dimmer', desc: 'Dimmer', isLight: true }],
-            [10, { name: 'colorcascade', desc: 'ColorCascade', isLight: true }],
-            [11, { name: 'mastercleaner2', desc: 'Master Cleaner 2' }],
-            [12, { name: 'pool', desc: 'Pool', hasHeatSource: true }],
-            [13, { name: 'spa', desc: 'Spa', hasHeatSource: true }]
+            [10, { name: 'colorcascade', desc: 'ColorCascade', isLight: true, theme: 'intellibrite' }],
+            [11, { name: 'mastercleaner2', desc: 'Master Cleaner 2', body: 2 }],
+            [12, { name: 'pool', desc: 'Pool', hasHeatSource: true, body: 1 }],
+            [13, { name: 'spa', desc: 'Spa', hasHeatSource: true, body: 2 }]
         ]);
         this.valueMaps.pumpTypes = new byteValueMap([
-            [1, { name: 'ss', desc: 'Single Speed', maxCircuits: 0, hasAddress: false, hasBody:true }],
-            [2, { name: 'ds', desc: 'Two Speed', maxCircuits: 8, hasAddress: false, hasBody:true }],
+            [1, { name: 'ss', desc: 'Single Speed', maxCircuits: 0, hasAddress: false, hasBody: true }],
+            [2, { name: 'ds', desc: 'Two Speed', maxCircuits: 8, hasAddress: false, hasBody: true }],
             [3, { name: 'vs', desc: 'Intelliflo VS', maxPrimingTime: 6, minSpeed: 450, maxSpeed: 3450, maxCircuits: 8, hasAddress: true }],
             [4, { name: 'vsf', desc: 'Intelliflo VSF', minSpeed: 450, maxSpeed: 3450, minFlow: 15, maxFlow: 130, maxCircuits: 8, hasAddress: true }],
-            [5, { name: 'vf', desc: 'Intelliflo VF', minFlow: 15, maxFlow: 130, maxCircuits: 8, hasAddress: true }],
-            [100, {name: 'sf', desc: 'SuperFlo VS', hasAddress: false, maxCircuits: 8, maxRelays: 4, equipmentMaster: 1}]
+            [5, { name: 'vf', desc: 'Intelliflo VF', maxPrimingTime: 6, minFlow: 15, maxFlow: 130, maxCircuits: 8, hasAddress: true }],
+            [100, { name: 'sf', desc: 'SuperFlo VS', hasAddress: false, maxCircuits: 8, maxRelays: 4, equipmentMaster: 1, maxSpeeds: 4, relays: [{ id: 1, name: 'Program #1' }, { id: 2, name: 'Program #2' }, { id: 3, name: 'Program #3' }, { id: 4, name: 'Program #4' }] }],
+            [101, { name: 'hwrly', desc: 'Hayward Relay VS', hasAddress: false, maxCircuits: 8, maxRelays: 4, equipmentMaster: 1, maxSpeeds: 8, relays: [{ id: 1, name: 'Step #1' }, { id: 2, name: 'Step #2' }, { id: 3, name: 'Step #3' }, { id: 4, name: 'Pump On' }] }],
+            [102, { name: 'hwvs', desc: 'Hayward Eco/TriStar VS', minSpeed: 450, maxSpeed: 3450, maxCircuits: 8, hasAddress: true, equipmentMaster: 1 }]
         ]);
         // RSG - same as systemBoard definition; can delete.
         this.valueMaps.heatModes = new byteValueMap([
-            [0, { name: 'off', desc: 'Off' }],
+            [1, { name: 'off', desc: 'Off' }],
             [3, { name: 'heater', desc: 'Heater' }],
             [5, { name: 'solar', desc: 'Solar Only' }],
             [12, { name: 'solarpref', desc: 'Solar Preferred' }]
@@ -85,12 +93,12 @@ export class IntelliCenterBoard extends SystemBoard {
         ]);
         this.valueMaps.heaterTypes = new byteValueMap([
             [1, { name: 'gas', desc: 'Gas Heater', hasAddress: false }],
-            [2, { name: 'solar', desc: 'Solar Heater', hasAddress: false, hasCoolSetpoint: true }],
-            [3, { name: 'heatpump', desc: 'Heat Pump', hasAddress: true }],
-            [4, { name: 'ultratemp', desc: 'UltraTemp', hasAddress: true, hasCoolSetpoint: true }],
+            [2, { name: 'solar', desc: 'Solar Heater', hasAddress: false, hasCoolSetpoint: true, hasPreference: true }],
+            [3, { name: 'heatpump', desc: 'Heat Pump', hasAddress: true, hasPreference: true }],
+            [4, { name: 'ultratemp', desc: 'UltraTemp', hasAddress: true, hasCoolSetpoint: true, hasPreference: true }],
             [5, { name: 'hybrid', desc: 'Hybrid', hasAddress: true }],
-            [6, { name: 'maxetherm', desc: 'Max-E-Therm', hasAddress: true }],
-            [7, { name: 'mastertemp', desc: 'MasterTemp', hasAddress: true }]
+            [6, { name: 'mastertemp', desc: 'MasterTemp', hasAddress: true }],
+            [7, { name: 'maxetherm', desc: 'Max-E-Therm', hasAddress: true }],
         ]);
 
 
@@ -127,10 +135,10 @@ export class IntelliCenterBoard extends SystemBoard {
             [4, { name: 'i10P', part: '521993Z', desc: 'i10P Personality Card', bodies: 1, valves: 2, circuits: 10, shared: false, dual: false, chlorinators: 1, chemControllers: 1 }], // This is a guess
             [5, { name: 'i10PS', part: '521873Z', desc: 'i10PS Personality Card', bodies: 2, valves: 4, circuits: 11, shared: true, dual: false, chlorinators: 1, chemControllers: 1 }],
             [6, { name: 'i10x', part: '522997Z', desc: 'i10x Expansion Module', circuits: 10 }],
-            [7, { name: 'i10D', part: '523029Z', desc: 'i10D Personality Card', bodies: 2, valves: 2, circuits: 11, shared: false, dual: true, chlorinators: 1, chemControllers: 1 }], // We have witnessed this in the wild
+            [7, { name: 'i10D', part: '523029Z', desc: 'i10D Personality Card', bodies: 2, valves: 2, circuits: 11, shared: false, dual: true, chlorinators: 1, chemControllers: 2 }], // We have witnessed this in the wild
             [8, { name: 'Valve Exp', part: '522440', desc: 'Valve Expansion Module', valves: 6 }],
-            [9, { name: 'iChlor Mux', part: '522719', desc: 'iChlor MUX Card', chlorinators: 3 }], // This is a guess
-            [10, { name: 'A/D Module', part: '522039', desc: 'A/D Cover Module', covers: 2 }], // This is a guess
+            [9, { name: 'A/D Module', part: '522039', desc: 'A/D Cover Module', covers: 2 }], // Finally have a user with one of these
+            [10, { name: 'iChlor Mux', part: '522719', desc: 'iChlor MUX Card', chlorinators: 3 }], // This is a guess
             [255, {name: 'i5x', part: '522033', desc: 'i5x Expansion Module', circuits: 5}] // This does not actually map to a known value at this point but we do know it will be > 6.
         ]);
 
@@ -167,19 +175,48 @@ export class IntelliCenterBoard extends SystemBoard {
             [2, { name: 'sunset', desc: 'Sunset' }]
         ]);
         this.valueMaps.lightThemes = new byteValueMap([
-            [0, { name: 'white', desc: 'White', sequence: 11 }],
-            [1, { name: 'green', desc: 'Green', sequence: 9 }],
-            [2, { name: 'blue', desc: 'Blue', sequence: 8 }],
-            [3, { name: 'magenta', desc: 'Magenta', sequence: 12 }],
-            [4, { name: 'red', desc: 'Red', sequence: 10 }],
-            [5, { name: 'sam', desc: 'SAm Mode', sequence: 1 }],
-            [6, { name: 'party', desc: 'Party', sequence: 2 }],
-            [7, { name: 'romance', desc: 'Romance', sequence: 3 }],
-            [8, { name: 'caribbean', desc: 'Caribbean', sequence: 4 }],
-            [9, { name: 'american', desc: 'American', sequence: 5 }],
-            [10, { name: 'sunset', desc: 'Sunset', sequence: 6 }],
-            [11, { name: 'royal', desc: 'Royal', sequence: 7 }],
+            [0, { name: 'white', desc: 'White', sequence: 11, types:['intellibrite', 'magicstream'] }],
+            [1, { name: 'green', desc: 'Green', sequence: 9, types: ['intellibrite', 'magicstream'] }],
+            [2, { name: 'blue', desc: 'Blue', sequence: 8, types: ['intellibrite', 'magicstream'] }],
+            [3, { name: 'magenta', desc: 'Magenta', sequence: 12, types: ['intellibrite', 'magicstream'] }],
+            [4, { name: 'red', desc: 'Red', sequence: 10, types: ['intellibrite', 'magicstream'] }],
+            [5, { name: 'sam', desc: 'SAm Mode', sequence: 1, types: ['intellibrite', 'magicstream'] }],
+            [6, { name: 'party', desc: 'Party', sequence: 2, types: ['intellibrite', 'magicstream'] }],
+            [7, { name: 'romance', desc: 'Romance', sequence: 3, types: ['intellibrite', 'magicstream'] }],
+            [8, { name: 'caribbean', desc: 'Caribbean', sequence: 4, types: ['intellibrite', 'magicstream'] }],
+            [9, { name: 'american', desc: 'American', sequence: 5, types: ['intellibrite', 'magicstream'] }],
+            [10, { name: 'sunset', desc: 'Sunset', sequence: 6, types: ['intellibrite', 'magicstream'] }],
+            [11, { name: 'royal', desc: 'Royal', sequence: 7, types: ['intellibrite', 'magicstream'] }],
             [255, { name: 'none', desc: 'None' }]
+        ]);
+        this.valueMaps.lightGroupCommands = new byteValueMap([
+            [1, { name: 'colorsync', desc: 'Sync', types: ['intellibrite'], command: 'colorSync', message: 'Synchronizing' }],
+            [2, { name: 'colorset', desc: 'Set', types: ['intellibrite'], command: 'colorSet', message: 'Sequencing Set Operation' }],
+            [3, { name: 'colorswim', desc: 'Swim', types: ['intellibrite'], command: 'colorSwim', message: 'Sequencing Swim Operation' }],
+            [12, { name: 'colorhold', desc: 'Hold', types: ['intellibrite', 'magicstream'], command: 'colorHold', message: 'Saving Current Colors', sequence: 13 }],
+            [13, { name: 'colorrecall', desc: 'Recall', types: ['intellibrite', 'magicstream'], command: 'colorRecall', message: 'Recalling Saved Colors', sequence: 14 }]
+        ]);
+
+        this.valueMaps.lightCommands = new byteValueMap([
+            [12, { name: 'colorhold', desc: 'Hold', types: ['intellibrite'], sequence: 13 }],
+            [13, { name: 'colorrecall', desc: 'Recall', types: ['intellibrite'], sequence: 14 }],
+            [15, {
+                name: 'lightthumper', desc: 'Thumper', types: ['magicstream'], command: 'lightThumper', message: 'Toggling Thumper',
+                sequence: [ // Cycle party mode 3 times.
+                    { isOn: false, timeout: 100 },
+                    { isOn: true, timeout: 100 },
+                    { isOn: false, timeout: 100 },
+                    { isOn: true, timeout: 5000 },
+                    { isOn: false, timeout: 100 },
+                    { isOn: true, timeout: 100 },
+                    { isOn: false, timeout: 100 },
+                    { isOn: true, timeout: 5000 },
+                    { isOn: false, timeout: 100 },
+                    { isOn: true, timeout: 100 },
+                    { isOn: false, timeout: 100 },
+                    { isOn: true, timeout: 1000 },
+                ]
+            }]
         ]);
         this.valueMaps.lightColors = new byteValueMap([
             [0, { name: 'white', desc: 'White' }],
@@ -207,8 +244,9 @@ export class IntelliCenterBoard extends SystemBoard {
             [1, { name: 'heater', desc: 'Heater' }],
             [2, { name: 'solar', desc: 'Solar' }],
             [3, { name: 'cooling', desc: 'Cooling' }],
+            [6, { name: 'mtheat', desc: 'Heater' }],
             [4, { name: 'hpheat', desc: 'Heating' }],
-            [8, { name: 'hpcool', desc: 'Cooling'}]
+            [8, { name: 'hpcool', desc: 'Cooling' }]
         ]);
         this.valueMaps.scheduleTypes = new byteValueMap([
             [0, { name: 'runonce', desc: 'Run Once', startDate: true, startTime: true, endTime: true, days: false, heatSource: true, heatSetpoint: true }],
@@ -234,7 +272,6 @@ export class IntelliCenterBoard extends SystemBoard {
     public heaters: IntelliCenterHeaterCommands = new IntelliCenterHeaterCommands(this);
     public valves: IntelliCenterValveCommands = new IntelliCenterValveCommands(this);
     public chemControllers: IntelliCenterChemControllerCommands = new IntelliCenterChemControllerCommands(this);
-
     public reloadConfig() {
         //sys.resetSystem();
         sys.configVersion.clear();
@@ -562,7 +599,7 @@ export class IntelliCenterBoard extends SystemBoard {
     }
     public get commandSourceAddress(): number { return Message.pluginAddress; }
     public get commandDestAddress(): number { return 15; }
-    public static getAckResponse(action: number): Response { return Response.create({ dest: sys.board.commandSourceAddress, action: 1, payload: [action] }); }
+    public static getAckResponse(action: number, source?: number, dest?: number): Response { return Response.create({ source: source, dest: dest || sys.board.commandSourceAddress, action: 1, payload: [action] }); }
 }
 class IntelliCenterConfigRequest extends ConfigRequest {
     constructor(cat: number, ver: number, items?: number[], oncomplete?: Function) {
@@ -572,7 +609,7 @@ class IntelliCenterConfigRequest extends ConfigRequest {
         if (typeof items !== 'undefined') this.items.push(...items);
         this.oncomplete = oncomplete;
     }
-    public category: ConfigCategories;
+    declare category: ConfigCategories;
 }
 class IntelliCenterConfigQueue extends ConfigQueue {
     public _processing: boolean = false;
@@ -633,14 +670,14 @@ class IntelliCenterConfigQueue extends ConfigQueue {
                 response: Response.create({ dest:-1, action: 30, payload: [this.curr.category, itm], callback: () => { self.processNext(out); } })
             });
             logger.verbose(`Requesting config for: ${ConfigCategories[this.curr.category]} - Item: ${itm}`);
-            setTimeout(conn.queueSendMessage, 50, out);
+            setTimeout(() => { conn.queueSendMessage(out) }, 50);
         } else {
             // Now that we are done check the configuration a final time.  If we have anything outstanding
             // it will get picked up.
             state.status = 1;
             this.curr = null;
             this._processing = false;
-            if (this._failed) setTimeout(function () { sys.checkConfiguration(); }, 100);
+            if (this._failed) setTimeout(() => { sys.checkConfiguration(); }, 100);
             logger.info(`Configuration Complete`);
             sys.board.heaters.updateHeaterServices();
             state.cleanupState();
@@ -745,24 +782,41 @@ class IntelliCenterConfigQueue extends ConfigQueue {
         this.maybeQueueItems(curr.general, ver.general, ConfigCategories.general, [0, 1, 2, 3, 4, 5, 6, 7]);
         this.maybeQueueItems(curr.covers, ver.covers, ConfigCategories.covers, [0, 1]);
         if (this.compareVersions(curr.schedules, ver.schedules)) {
-            let req = new IntelliCenterConfigRequest(ConfigCategories.schedules, ver.schedules, [0, 1, 2, 3, 4], function (req: IntelliCenterConfigRequest) {
+            // Alright we used to think we could rely on the schedule start time as the trigger that identifies an active schedule.  However, active
+            // schedules are actually determined by looking at the schedule type messages[8-10].
+            let req = new IntelliCenterConfigRequest(ConfigCategories.schedules, ver.schedules, [8, 9, 10], function (req: IntelliCenterConfigRequest) {
                 let maxSchedId = sys.schedules.getMaxId();
                 req.fillRange(5, 5 + Math.min(Math.ceil(maxSchedId / 40), 7)); // Circuits
-                req.fillRange(8, 8 + Math.min(Math.ceil(maxSchedId / 40), 10)); // Flags
                 req.fillRange(11, 11 + Math.min(Math.ceil(maxSchedId / 40), 13)); // Schedule days bitmask
-                req.fillRange(14, 14 + Math.min(Math.ceil(maxSchedId / 40), 16)); // Unknown (one byte per schedule)
-                req.fillRange(17, 17 + Math.min(Math.ceil(maxSchedId / 40), 19)); // Unknown (one byte per schedule)
-                req.fillRange(20, 20 + Math.min(Math.ceil(maxSchedId / 40), 22)); // Unknown (one byte per schedule)
+                req.fillRange(0, Math.min(Math.ceil(maxSchedId / 40), 4)); // Start Time
                 req.fillRange(23, 23 + Math.min(Math.ceil(maxSchedId / 20), 26)); // End Time
+                req.fillRange(14, 14 + Math.min(Math.ceil(maxSchedId / 40), 16)); // Start Month
+                req.fillRange(17, 17 + Math.min(Math.ceil(maxSchedId / 40), 19)); // Start Day
+                req.fillRange(20, 20 + Math.min(Math.ceil(maxSchedId / 40), 22)); // Start Year
                 req.fillRange(28, 28 + Math.min(Math.ceil(maxSchedId / 40), 30)); // Heat Mode
                 req.fillRange(31, 31 + Math.min(Math.ceil(maxSchedId / 40), 33)); // Heat Mode
                 req.fillRange(34, 34 + Math.min(Math.ceil(maxSchedId / 40), 36)); // Heat Mode
             });
+            // DEPRECATED: 12-26-21 This was the old order of fetching the schedule.  This did not work properly with start times of midnight since the start time of 0
+            // was previously being used to determine whether the schedule was active.  The schedule/time type messages are now being used.
+            //let req = new IntelliCenterConfigRequest(ConfigCategories.schedules, ver.schedules, [0, 1, 2, 3, 4], function (req: IntelliCenterConfigRequest) {
+            //    let maxSchedId = sys.schedules.getMaxId();
+            //    req.fillRange(5, 5 + Math.min(Math.ceil(maxSchedId / 40), 7)); // Circuits
+            //    req.fillRange(8, 8 + Math.min(Math.ceil(maxSchedId / 40), 10)); // Flags
+            //    req.fillRange(11, 11 + Math.min(Math.ceil(maxSchedId / 40), 13)); // Schedule days bitmask
+            //    req.fillRange(14, 14 + Math.min(Math.ceil(maxSchedId / 40), 16)); // Unknown (one byte per schedule)
+            //    req.fillRange(17, 17 + Math.min(Math.ceil(maxSchedId / 40), 19)); // Unknown (one byte per schedule)
+            //    req.fillRange(20, 20 + Math.min(Math.ceil(maxSchedId / 40), 22)); // Unknown (one byte per schedule)
+            //    req.fillRange(23, 23 + Math.min(Math.ceil(maxSchedId / 20), 26)); // End Time
+            //    req.fillRange(28, 28 + Math.min(Math.ceil(maxSchedId / 40), 30)); // Heat Mode
+            //    req.fillRange(31, 31 + Math.min(Math.ceil(maxSchedId / 40), 33)); // Heat Mode
+            //    req.fillRange(34, 34 + Math.min(Math.ceil(maxSchedId / 40), 36)); // Heat Mode
+            //});
             this.push(req);
         }
         this.maybeQueueItems(curr.systemState, ver.systemState, ConfigCategories.systemState, [0]);
         logger.info(`Queued ${this.remainingItems} configuration items`);
-        if (this.remainingItems > 0) setTimeout(function () { self.processNext(); }, 50);
+        if (this.remainingItems > 0) setTimeout(() => { self.processNext(); }, 50);
         else {
             this._processing = false;
             if (this._newRequest) {
@@ -1285,7 +1339,7 @@ class IntelliCenterSystemCommands extends SystemCommands {
                     let out = Outbound.create({
                         action: 168,
                         retries: 5,
-                        payload: [12, 0, 10, parseInt(obj.timeZone, 10)],
+                        payload: [12, 0, 13, parseInt(obj.timeZone, 10)],
                         response: IntelliCenterBoard.getAckResponse(168),
                         onComplete: (err, msg) => {
                             if (err) reject(err);
@@ -1388,7 +1442,20 @@ class IntelliCenterSystemCommands extends SystemCommands {
     }
 }
 class IntelliCenterCircuitCommands extends CircuitCommands {
-    public board: IntelliCenterBoard;
+    declare board: IntelliCenterBoard;
+    // Need to override this as IntelliCenter manages all the egg timers for all circuit types.
+    public async checkEggTimerExpirationAsync() {
+        try {
+            for (let i = 0; i < sys.circuits.length; i++) {
+                let c = sys.circuits.getItemByIndex(i);
+                let cstate = state.circuits.getItemByIndex(i);
+                if (!cstate.isActive || !cstate.isOn) continue;
+                if (c.master === 1) {
+                    await ncp.circuits.checkCircuitEggTimerExpirationAsync(cstate);
+                }
+            }
+        } catch (err) { logger.error(`checkEggTimerExpiration: Error synchronizing circuit relays ${err.message}`); }
+    }
     public async setCircuitAsync(data: any): Promise<ICircuit> {
         let id = parseInt(data.id, 10);
         let circuit = sys.circuits.getItemById(id, false);
@@ -1405,7 +1472,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
             let eggHrs = Math.floor(eggTimer / 60);
             let eggMins = eggTimer - (eggHrs * 60);
             let type = typeof data.type !== 'undefined' ? parseInt(data.type, 10) : circuit.type;
-            let theme = typeof data.lightingTheme !== 'undefined' ? data.ligthingTheme : circuit.lightingTheme;
+            let theme = typeof data.lightingTheme !== 'undefined' ? data.lightingTheme : circuit.lightingTheme;
             if (circuit.type === 9) theme = typeof data.level !== 'undefined' ? data.level : circuit.level;
             if (typeof theme === 'undefined') theme = 0;
             let out = Outbound.create({
@@ -1419,14 +1486,24 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                 onComplete: (err, msg) => {
                     if (err) reject(err);
                     else {
+                        let scircuit = state.circuits.getItemById(circuit.id, true);
                         circuit.eggTimer = eggTimer;
                         circuit.dontStop = data.dontStop;
                         circuit.freeze = (typeof data.freeze !== 'undefined' ? utils.makeBool(data.freeze) : circuit.freeze);
                         circuit.showInFeatures = (typeof data.showInFeatures !== 'undefined' ? utils.makeBool(data.showInFeatures) : circuit.showInFeatures);
-                        if (type === 9) circuit.level = theme;
-                        else circuit.lightingTheme = theme;
-                        circuit.name = typeof data.name !== 'undefined' ? data.name.toString().substring(0, 16) : circuit.name;
-                        circuit.type = type;
+                        if (type === 9) scircuit.level = circuit.level = theme;
+                        else {
+                            let t = sys.board.valueMaps.circuitFunctions.transform(type);
+                            if (t.isLight == true) scircuit.lightingTheme = circuit.lightingTheme = theme;
+                            else {
+                                scircuit.lightingTheme = undefined;
+                                circuit.lightingTheme = 0;
+                            }
+                        }
+                        scircuit.name = circuit.name = typeof data.name !== 'undefined' ? data.name.toString().substring(0, 16) : circuit.name;
+                        scircuit.type = circuit.type = type;
+                        scircuit.isActive = circuit.isActive = true;
+                        circuit.master = 0;
                         resolve(circuit);
                     }
                 }
@@ -1926,15 +2003,83 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
         }
         catch (err) { return Promise.reject(err); }
     }
-    public sequenceLightGroupAsync(id: number, operation: string): Promise<LightGroupState> {
+    public async runLightGroupCommandAsync(obj: any): Promise<ICircuitState> {
+        // Do all our validation.
+        try {
+            let id = parseInt(obj.id, 10);
+            let cmd = typeof obj.command !== 'undefined' ? sys.board.valueMaps.lightGroupCommands.findItem(obj.command) : { val: 0, name: 'undefined' };
+            if (cmd.val === 0) return Promise.reject(new InvalidOperationError(`Light group command ${cmd.name} does not exist`, 'runLightGroupCommandAsync'));
+            if (isNaN(id)) return Promise.reject(new InvalidOperationError(`Light group ${id} does not exist`, 'runLightGroupCommandAsync'));
+            let grp = sys.lightGroups.getItemById(id);
+            let nop = sys.board.valueMaps.circuitActions.getValue(cmd.name);
+            let sgrp = state.lightGroups.getItemById(grp.id);
+            sgrp.action = nop;
+            sgrp.emitEquipmentChange();
+            switch (cmd.name) {
+                case 'colorset':
+                    await this.sequenceLightGroupAsync(id, 'colorset');
+                    break;
+                case 'colorswim':
+                    await this.sequenceLightGroupAsync(id, 'colorswim');
+                    break;
+                case 'colorhold':
+                    await this.setLightGroupThemeAsync(id, 12);
+                    break;
+                case 'colorrecall':
+                    await this.setLightGroupThemeAsync(id, 13);
+                    break;
+                case 'lightthumper':
+                    break;
+            }
+            sgrp.action = 0;
+            sgrp.emitEquipmentChange();
+            return sgrp;
+        }
+        catch (err) { return Promise.reject(`Error runLightGroupCommandAsync ${err.message}`); }
+    }
+    public async runLightCommandAsync(obj: any): Promise<ICircuitState> {
+        // Do all our validation.
+        try {
+            let id = parseInt(obj.id, 10);
+            let cmd = typeof obj.command !== 'undefined' ? sys.board.valueMaps.lightCommands.findItem(obj.command) : { val: 0, name: 'undefined' };
+            if (cmd.val === 0) return Promise.reject(new InvalidOperationError(`Light command ${cmd.name} does not exist`, 'runLightCommandAsync'));
+            if (isNaN(id)) return Promise.reject(new InvalidOperationError(`Light ${id} does not exist`, 'runLightCommandAsync'));
+            let circ = sys.circuits.getItemById(id);
+            if (!circ.isActive) return Promise.reject(new InvalidOperationError(`Light circuit #${id} is not active`, 'runLightCommandAsync'));
+            let type = sys.board.valueMaps.circuitFunctions.transform(circ.type);
+            if (!type.isLight) return Promise.reject(new InvalidOperationError(`Circuit #${id} is not a light`, 'runLightCommandAsync'));
+            let nop = sys.board.valueMaps.circuitActions.getValue(cmd.name);
+            let slight = state.circuits.getItemById(circ.id);
+            slight.action = nop;
+            slight.emitEquipmentChange();
+            switch (cmd.name) {
+                case 'colorhold':
+                    await this.setLightThemeAsync(id, 12);
+                    break;
+                case 'colorrecall':
+                    await this.setLightThemeAsync(id, 13);
+                    break;
+                case 'lightthumper':
+                    // I do not know how to trigger the thumper.
+                    break;
+            }
+            slight.action = 0;
+            slight.emitEquipmentChange();
+            return slight;
+        }
+        catch (err) { return Promise.reject(`Error runLightCommandAsync ${err.message}`); }
+    }
+    public async sequenceLightGroupAsync(id: number, operation: string): Promise<LightGroupState> {
         let sgroup = state.lightGroups.getItemById(id);
-        let nop = sys.board.valueMaps.intellibriteActions.getValue(operation);
-        if (nop > 0) {
-            let out = this.createCircuitStateMessage(id, true);
+        try {
+            if (!sgroup.isActive) return Promise.reject(new InvalidEquipmentIdError(`An active light group could not be found with id ${id}`, id, 'lightGroup'));
+            let cmd = sys.board.valueMaps.lightGroupCommands.findItem(operation.toLowerCase());
             let ndx = id - sys.board.equipmentIds.circuitGroups.start;
             let byteNdx = Math.floor(ndx / 4);
             let bitNdx = (ndx * 2) - (byteNdx * 8);
+            let out = this.createCircuitStateMessage(id, true);
             let byte = out.payload[28 + byteNdx];
+
             // Each light group is represented by two bits on the status byte.  There are 3 status bytes that give us only 12 of the 16 on the config stream but the 168 message
             // does acutally send 4 so all are represented there.
             // [10] = Set
@@ -1943,46 +2088,96 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
             // [11] = No sequencing underway.
             // In the end we are only trying to impact the specific bits in the middle of the byte that represent
             // the light group we are dealing with.            
-            switch (nop) {
-                case 1: // Sync
+            switch (cmd.name) {
+                case 'colorsync':
                     byte &= ((0xFC << bitNdx) | (0xFF >> (8 - bitNdx)));
                     break;
-                case 2: // Color Set
+                case 'colorset':
                     byte &= ((0xFE << bitNdx) | (0xFF >> (8 - bitNdx)));
                     break;
-                case 3: // Color Swim
+                case 'colorswim':
                     byte &= ((0xFD << bitNdx) | (0xFF >> (8 - bitNdx)));
                     break;
+                default:
+                    return Promise.reject(new InvalidOperationError(`Invalid Light Group Sequence ${operation}`, 'sequenceLightGroupAsync'));
             }
-            console.log({ groupNdx: ndx, action: nop, byteNdx: byteNdx, bitNdx: bitNdx, byte: byte })
+            sgroup.emitEquipmentChange();
             out.payload[28 + byteNdx] = byte;
-            return new Promise<LightGroupState>((resolve, reject) => {
+            // So now we have all the info we need to sequence the group.
+            await new Promise((resolve, reject) => {
                 out.retries = 5;
                 out.response = IntelliCenterBoard.getAckResponse(168);
                 out.onComplete = (err, msg) => {
                     if (!err) {
-                        sgroup.action = nop;
+                        sgroup.action = sys.board.valueMaps.circuitActions.getValue(cmd.name);
                         state.emitEquipmentChanges();
                         resolve(sgroup);
                     }
-                    else reject(err);
+                    else {
+                        sgroup.action = 0;
+                        reject(err);
+                    }
                 };
                 conn.queueSendMessage(out);
             });
-        }
-        return Promise.resolve(sgroup);
+            return sgroup;
+        } catch (err) { return Promise.reject(new InvalidOperationError(`Error Sequencing Light Group: ${err.message}`, 'sequenceLightGroupAsync')); }
+        //let nop = sys.board.valueMaps.circuitActions.getValue(operation);
+        //if (nop > 0) {
+        //    let out = this.createCircuitStateMessage(id, true);
+        //    let ndx = id - sys.board.equipmentIds.circuitGroups.start;
+        //    let byteNdx = Math.floor(ndx / 4);
+        //    let bitNdx = (ndx * 2) - (byteNdx * 8);
+        //    let byte = out.payload[28 + byteNdx];
+        //    // Each light group is represented by two bits on the status byte.  There are 3 status bytes that give us only 12 of the 16 on the config stream but the 168 message
+        //    // does acutally send 4 so all are represented there.
+        //    // [10] = Set
+        //    // [01] = Swim
+        //    // [00] = Sync
+        //    // [11] = No sequencing underway.
+        //    // In the end we are only trying to impact the specific bits in the middle of the byte that represent
+        //    // the light group we are dealing with.            
+        //    switch (nop) {
+        //        case 1: // Sync
+        //            byte &= ((0xFC << bitNdx) | (0xFF >> (8 - bitNdx)));
+        //            break;
+        //        case 2: // Color Set
+        //            byte &= ((0xFE << bitNdx) | (0xFF >> (8 - bitNdx)));
+        //            break;
+        //        case 3: // Color Swim
+        //            byte &= ((0xFD << bitNdx) | (0xFF >> (8 - bitNdx)));
+        //            break;
+        //    }
+        //    console.log({ groupNdx: ndx, action: nop, byteNdx: byteNdx, bitNdx: bitNdx, byte: byte })
+        //    out.payload[28 + byteNdx] = byte;
+        //    return new Promise<LightGroupState>((resolve, reject) => {
+        //        out.retries = 5;
+        //        out.response = IntelliCenterBoard.getAckResponse(168);
+        //        out.onComplete = (err, msg) => {
+        //            if (!err) {
+        //                sgroup.action = nop;
+        //                state.emitEquipmentChanges();
+        //                resolve(sgroup);
+        //            }
+        //            else reject(err);
+        //        };
+        //        conn.queueSendMessage(out);
+        //    });
+        //}
+        //return Promise.resolve(sgroup);
     }
-    public getLightThemes(type: number): any[] {
-        switch (type) {
-            case 5: // Intellibrite
-            case 6: // Globrite
-            case 8: // Magicstream
-            case 10: // ColorCascade
-                return sys.board.valueMaps.lightThemes.toArray();
-            default:
-                return [];
-        }
-    }
+    // 12-01-21 RKS: This has been deprecated.  This allows for multiple vendor light themes driven by the metadata on the valuemaps.
+    //public getLightThemes(type: number): any[] {
+    //    switch (type) {
+    //        case 5: // Intellibrite
+    //        case 6: // Globrite
+    //        case 8: // Magicstream
+    //        case 10: // ColorCascade
+    //            return sys.board.valueMaps.lightThemes.toArray();
+    //        default:
+    //            return [];
+    //    }
+    //}
     private async verifyVersionAsync(): Promise<boolean> {
         return new Promise<boolean>((resolve, reject) => {
             let out = Outbound.create({
@@ -2042,7 +2237,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
             conn.queueSendMessage(out);
         });
     }
-    public async setCircuitStateAsync(id: number, val: boolean): Promise<ICircuitState> {
+    public async setCircuitStateAsync(id: number, val: boolean, ignoreDelays?: boolean): Promise<ICircuitState> {
         let c = sys.circuits.getInterfaceById(id);
         if (c.master !== 0) return await super.setCircuitStateAsync(id, val);
         // As of 1.047 there is a sequence to this.
@@ -2055,6 +2250,14 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
         // NOT SURE IF COINCIDENTAL: The ICP seems to respond immediately after action 2.
         // 7. ICP Sends 168[15,0,... new options, 0,0,0,0]
         // 8. OCP responds ACK(168)
+        // i10D turn on pool
+        // OCP
+        // Schedule on
+        // [255, 0, 255][165, 1, 15, 16, 168, 36][15, 0, 0, 33, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 1][5, 226]
+        // No schedules
+        // [255, 0, 255][165, 1, 15, 16, 168, 36][15, 0, 0, 38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 1, 0][5, 195]
+        // njsPC
+        // [255, 0, 255][165, 1, 15, 33, 168, 36][15, 0, 0, 33, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0,  8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0][5, 216]
 
         // The previous sequence is just additional noise on the bus. There is no need for it.  We just
         // need to send the set circuit message.  It will reliably work 100% of the time but the ICP
@@ -2064,6 +2267,9 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
             //if (b) b = await this.getConfigAsync([15, 0]);
             return new Promise<ICircuitState>((resolve, reject) => {
                 let out = this.createCircuitStateMessage(id, val);
+                //if (sys.equipment.dual && id === 6) out.setPayloadByte(35, 1);
+                out.setPayloadByte(34, 1);
+                out.source = 16;
                 out.onComplete = async (err, msg: Inbound) => {
                     if (err) reject(err);
                     else {
@@ -2123,6 +2329,30 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
         }
         catch (err) { return Promise.reject(err); }
     }
+    public async setColorHoldAsync(id: number): Promise<ICircuitState> {
+        let circuit = sys.circuits.getInterfaceById(id);
+        if (circuit.master === 1) return await super.setColorHoldAsync(id);
+        try {
+            if (sys.board.equipmentIds.circuitGroups.isInRange(id)) {
+                await this.setLightGroupThemeAsync(id, 12);
+                return Promise.resolve(state.lightGroups.getItemById(id));
+            }
+            return await this.setLightThemeAsync(id, 12);
+        }
+        catch (err) { return Promise.reject(err); }
+    }
+    public async setColorRecallAsync(id: number): Promise<ICircuitState> {
+        let circuit = sys.circuits.getInterfaceById(id);
+        if (circuit.master === 1) return await super.setColorHoldAsync(id);
+        try {
+            if (sys.board.equipmentIds.circuitGroups.isInRange(id)) {
+                await this.setLightGroupThemeAsync(id, 13);
+                return Promise.resolve(state.lightGroups.getItemById(id));
+            }
+            return await this.setLightThemeAsync(id, 13);
+        }
+        catch (err) { return Promise.reject(err); }
+    }
     public async setLightThemeAsync(id: number, theme: number): Promise<ICircuitState> {
         let circuit = sys.circuits.getInterfaceById(id);
         if (circuit.master === 1) return await super.setLightThemeAsync(id, theme);
@@ -2138,6 +2368,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                     action: 168, payload: [1, 0, id - 1, circuit.type, circuit.freeze ? 1 : 0, circuit.showInFeatures ? 1 : 0,
                         theme, Math.floor(circuit.eggTimer / 60), circuit.eggTimer - ((Math.floor(circuit.eggTimer) / 60) * 60), circuit.dontStop ? 1 : 0]
                 });
+                cstate.action = sys.board.valueMaps.circuitActions.getValue('lighttheme');
                 out.response = IntelliCenterBoard.getAckResponse(168);
                 out.retries = 5;
                 await new Promise<void>((resolve, reject) => {
@@ -2150,6 +2381,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                         else {
                             reject(err);
                         }
+                        cstate.action = 0;
                     };
                     out.appendPayloadString(circuit.name, 16);
                     conn.queueSendMessage(out);
@@ -2297,7 +2529,19 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
             let ndx = Math.floor(ordinal / 8);
             let byte = out.payload[ndx + 15];
             let bit = ordinal - (ndx * 8);
-            if (sched.isOn) byte = byte | (1 << bit);
+            // Lets determine if this schedule should be on.
+            if (sched.circuit === id) {
+                if (isOn) {
+                    let dt = state.time.toDate();
+                    let dow = dt.getDay();
+                    // Convert the dow to the bit value.
+                    let sd = sys.board.valueMaps.scheduleDays.toArray().find(elem => elem.dow === dow);
+                    let dayVal = sd.bitVal || sd.val;  // The bitval allows mask overrides.
+                    let ts = dt.getHours() * 60 + dt.getMinutes();
+                    if ((sched.scheduleDays & dayVal) > 0 && ts >= sched.startTime && ts <= sched.endTime) byte = byte | (1 << bit);
+                }
+            }
+            else if (sched.isOn) byte = byte | (1 << bit);
             out.payload[ndx + 15] = byte;
         }
         return out;
@@ -2340,7 +2584,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
     }
 }
 class IntelliCenterFeatureCommands extends FeatureCommands {
-    public board: IntelliCenterBoard;
+    declare board: IntelliCenterBoard;
     public async setFeatureStateAsync(id, val): Promise<ICircuitState> { return sys.board.circuits.setCircuitStateAsync(id, val); }
     public async toggleFeatureStateAsync(id): Promise<ICircuitState> { return sys.board.circuits.toggleCircuitStateAsync(id); }
     public syncGroupStates() { } // Do nothing and let IntelliCenter do it.
@@ -2426,28 +2670,32 @@ class IntelliCenterFeatureCommands extends FeatureCommands {
 class IntelliCenterChlorinatorCommands extends ChlorinatorCommands {
     public async setChlorAsync(obj: any): Promise<ChlorinatorState> {
         let id = parseInt(obj.id, 10);
+        // Bail out right away if this is not controlled by the OCP.
+        if (typeof obj.master !== 'undefined' && parseInt(obj.master, 10) !== 0) return super.setChlorAsync(obj);
         let isAdd = false;
-        let isVirtual = false;
-        if (id <= 0 || isNaN(id)) id = 1;
-        let chlor = sys.chlorinators.getItemById(id);
-        if (id < 0 || isNaN(id)) {
-            isAdd = true;
-            chlor.master = utils.makeBool(obj.isVirtual) ? 0 : 1;
-            // Calculate an id for the chlorinator.  The messed up part is that if a chlorinator is not attached to the OCP, its address
-            // cannot be set by the MUX.  This will have to wait.
+        if (isNaN(id) || id <= 0) {
+            // We are adding so we need to see if there is another chlorinator that is not external.
+            if (sys.chlorinators.count(elem => elem.master !== 2) > sys.equipment.maxChlorinators) return Promise.reject(new InvalidEquipmentDataError(`The max number of chlorinators has been exceeded you may only add ${sys.equipment.maxChlorinators}`, 'chlorinator', sys.equipment.maxChlorinators));
             id = 1;
+            isAdd = true;
         }
+        let chlor = sys.chlorinators.getItemById(id);
+        if (chlor.master !== 0 && !isAdd) return super.setChlorAsync(obj);
 
-        //let chlor = extend(true, {}, sys.chlorinators.getItemById(id).get(), obj);
-        // If this is a virtual chlorinator then go to the base class and handle it from there.
-        if (chlor.master === 1) return super.setChlorAsync(obj);
-        let name = obj.name || 'IntelliChlor' + id;
-        let poolSetpoint = parseInt(obj.poolSetpoint, 10);
-        let spaSetpoint = parseInt(obj.spaSetpoint, 10);
+        let name = obj.name || chlor.name || 'IntelliChlor' + id;
         let superChlorHours = parseInt(obj.superChlorHours, 10);
         if (typeof obj.superChlorinate !== 'undefined') obj.superChlor = utils.makeBool(obj.superChlorinate);
         let superChlorinate = typeof obj.superChlor === 'undefined' ? undefined : utils.makeBool(obj.superChlor);
+        let isDosing = typeof obj.isDosing !== 'undefined' ? utils.makeBool(obj.isDosing) : chlor.isDosing;
         let disabled = typeof obj.disabled !== 'undefined' ? utils.makeBool(obj.disabled) : chlor.disabled;
+        // This should never never never modify the setpoints based upon the disabled or isDosing flags.
+        //let poolSetpoint = isDosing ? 100 : disabled ? 0 : parseInt(obj.poolSetpoint, 10);
+        //let spaSetpoint = isDosing ? 100 : disabled ? 0 : parseInt(obj.spaSetpoint, 10);
+        let poolSetpoint = typeof obj.poolSetpoint !== 'undefined' ? parseInt(obj.poolSetpoint, 10) : chlor.poolSetpoint;
+        let spaSetpoint = typeof obj.spaSetpoint !== 'undefined' ? parseInt(obj.spaSetpoint, 10) : chlor.spaSetpoint;
+        if (poolSetpoint === 0) console.log(obj);
+        let model = typeof obj.model !== 'undefined' ? sys.board.valueMaps.chlorinatorModel.encode(obj.model) : chlor.model || 0;
+        let chlorType = typeof obj.type !== 'undefined' ? sys.board.valueMaps.chlorinatorType.encode(obj.type) : chlor.type || 0;
         if (isAdd) {
             if (isNaN(poolSetpoint)) poolSetpoint = 50;
             if (isNaN(spaSetpoint)) spaSetpoint = 10;
@@ -2455,23 +2703,28 @@ class IntelliCenterChlorinatorCommands extends ChlorinatorCommands {
             if (typeof superChlorinate === 'undefined') superChlorinate = false;
         }
         else {
-            if (isNaN(poolSetpoint)) poolSetpoint = chlor.poolSetpoint;
-            if (isNaN(spaSetpoint)) spaSetpoint = chlor.spaSetpoint;
+            if (isNaN(poolSetpoint)) poolSetpoint = chlor.poolSetpoint || 0;
+            if (isNaN(spaSetpoint)) spaSetpoint = chlor.spaSetpoint || 0;
             if (isNaN(superChlorHours)) superChlorHours = chlor.superChlorHours;
             if (typeof superChlorinate === 'undefined') superChlorinate = utils.makeBool(chlor.superChlor);
         }
         if (typeof obj.disabled !== 'undefined') chlor.disabled = utils.makeBool(obj.disabled);
         if (typeof chlor.body === 'undefined') chlor.body = obj.body || 32;
         // Verify the data.
-        let body = sys.board.bodies.mapBodyAssociation(chlor.body);
+        let body = sys.board.bodies.mapBodyAssociation(typeof obj.body === 'undefined' ? chlor.body || 0 : obj.body);
         if (typeof body === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Chlorinator body association is not valid: ${chlor.body}`, 'chlorinator', chlor.body));
         if (poolSetpoint > 100 || poolSetpoint < 0) return Promise.reject(new InvalidEquipmentDataError(`Chlorinator poolSetpoint is out of range: ${chlor.poolSetpoint}`, 'chlorinator', chlor.poolSetpoint));
         if (spaSetpoint > 100 || spaSetpoint < 0) return Promise.reject(new InvalidEquipmentDataError(`Chlorinator spaSetpoint is out of range: ${chlor.poolSetpoint}`, 'chlorinator', chlor.spaSetpoint));
+        let portId = typeof obj.portId !== 'undefined' ? parseInt(obj.portId, 10) : chlor.portId;
+        if (portId !== chlor.portId && sys.chlorinators.count(elem => elem.id !== chlor.id && elem.portId === portId && elem.master !== 2) > 0) return Promise.reject(new InvalidEquipmentDataError(`Another chlorinator is installed on port #${portId}.  Only one chlorinator can be installed per port.`, 'Chlorinator', portId));
         if (typeof obj.ignoreSaltReading !== 'undefined') chlor.ignoreSaltReading = utils.makeBool(obj.ignoreSaltReading);
         return new Promise<ChlorinatorState>((resolve, reject) => {
             let out = Outbound.create({
                 action: 168,
-                payload: [7, 0, id - 1, body.val, 1, disabled ? 0 : poolSetpoint, disabled ? 0 : spaSetpoint, superChlorinate ? 1 : 0, superChlorHours, 0, 1],
+                payload: [7, 0, id - 1, body.val, 1,
+                    disabled ? 0 : isDosing ? 100 : poolSetpoint,
+                    disabled ? 0 : isDosing ? 100 : spaSetpoint,
+                    superChlorinate ? 1 : 0, superChlorHours, 0, 1],
                 response: IntelliCenterBoard.getAckResponse(168),
                 retries: 5,
                 onComplete: (err, msg) => {
@@ -2479,7 +2732,13 @@ class IntelliCenterChlorinatorCommands extends ChlorinatorCommands {
                     else {
                         let schlor = state.chlorinators.getItemById(id, true);
                         let cchlor = sys.chlorinators.getItemById(id, true);
+                        chlor.master = 0;
+                        schlor.body = chlor.body = body.val;
                         chlor.disabled = disabled;
+                        schlor.model = chlor.model = model;
+                        schlor.type = chlor.type = chlorType;
+                        chlor.name = schlor.name = name;
+                        chlor.isDosing = isDosing;
                         schlor.isActive = cchlor.isActive = true;
                         schlor.poolSetpoint = cchlor.poolSetpoint = poolSetpoint;
                         schlor.spaSetpoint = cchlor.spaSetpoint = spaSetpoint;
@@ -2495,21 +2754,22 @@ class IntelliCenterChlorinatorCommands extends ChlorinatorCommands {
     }
     public async deleteChlorAsync(obj: any): Promise<ChlorinatorState> {
         let id = parseInt(obj.id, 10);
-        if (isNaN(id)) obj.id = 1;
-
-        // Merge all the information.
-        let chlor = state.chlorinators.getItemById(id);
+        if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Chlorinator id is not valid: ${obj.id}`, 'chlorinator', obj.id));
+        let chlor = sys.chlorinators.getItemById(id);
+        if (chlor.master === 1) return await super.deleteChlorAsync(obj);
+        let schlor = state.chlorinators.getItemById(id);
         // Verify the data.
         return new Promise<ChlorinatorState>((resolve, reject) => {
             let out = Outbound.create({
                 action: 168,
-                payload: [7, 0, id - 1, chlor.body || 0, 0, chlor.poolSetpoint || 0, chlor.spaSetpoint || 0, 0, chlor.superChlorHours || 0, 0, 0],
+                payload: [7, 0, id - 1, schlor.body || 0, 0, schlor.poolSetpoint || 0, schlor.spaSetpoint || 0, 0, schlor.superChlorHours || 0, 0, 0],
                 response: IntelliCenterBoard.getAckResponse(168),
                 retries: 5,
                 onComplete: (err, msg) => {
                     if (err) reject(err);
                     else {
-                        let schlor = state.chlorinators.getItemById(id, true);
+                        ncp.chlorinators.deleteChlorinatorAsync(id).then(()=>{});
+                        schlor = state.chlorinators.getItemById(id, true);
                         state.chlorinators.removeItemById(id);
                         sys.chlorinators.removeItemById(id);
                         resolve(schlor);
@@ -2598,7 +2858,7 @@ class IntelliCenterPumpCommands extends PumpCommands {
         let id = (typeof data.id === 'undefined' || data.id <= 0) ? sys.pumps.getNextEquipmentId(sys.board.equipmentIds.pumps) : parseInt(data.id, 10);
         if (isNaN(id)) return Promise.reject(new Error(`Invalid pump id: ${data.id}`));
         let pump = sys.pumps.getItemById(id, false);
-        if (data.master > 0 || pump.master > 0 || pump.isVirtual) return await super.setPumpAsync(data);
+        if (data.master > 0 || pump.master > 0) return await super.setPumpAsync(data);
 
         //                                        0                    6              10   11  12           15
         //[255, 0, 255][165, 63, 15, 16, 168, 34][4, 0, 0, 3, 0, 96, 194, 1, 122, 13, 15, 130,  1, 196, 9, 128,   2, 255, 5, 0, 251, 128, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0][11, 218]
@@ -2691,10 +2951,11 @@ class IntelliCenterPumpCommands extends PumpCommands {
                                 let speed = parseInt(c.speed, 10);
                                 let flow = parseInt(c.flow, 10);
                                 let circuit = i < type.maxCircuits ? parseInt(c.circuit, 10) : 256;
-                                let units = parseInt(c.units, 10);
-                                if (isNaN(units)) units = 0;
-                                if (type.name === 'vs') units = 0;
-                                else if (type.name === 'vf') units = 1;
+                                let units;
+                                if (type.name === 'vf') units = sys.board.valueMaps.pumpUnits.getValue('gpm');
+                                else if (type.name === 'vs') units = sys.board.valueMaps.pumpUnits.getValue('rpm');
+                                else units = sys.board.valueMaps.pumpUnits.encode(c.units);
+                                if (isNaN(units)) units = sys.board.valueMaps.pumpUnits.getValue('rpm');
                                 outc.setPayloadByte(i + 18, circuit - 1, circ.circuit - 1);
                                 if (typeof type.minSpeed !== 'undefined' && (parseInt(c.units, 10) === 0 || isNaN(parseInt(c.units, 10)))) {
                                     outc.setPayloadByte(i + 26, 0); // Set to rpm
@@ -2830,6 +3091,9 @@ class IntelliCenterPumpCommands extends PumpCommands {
         // We now need to get the type for the pump.  If the incoming data doesn't include it then we need to
         // get it from the current pump configuration.
         let pump = sys.pumps.getItemById(id, false);
+        // Check to see if this happens to be a Nixie Pump.
+        if (pump.master === 1) return super.deletePumpAsync(data);
+
         if (typeof pump.type === 'undefined') return Promise.reject(new InvalidEquipmentIdError(`Pump #${data.id} does not exist in configuration`, data.id, 'Schedule'));
         let outc = Outbound.create({ action: 168, payload: [4, 0, id - 1, 0, 0, id + 95] });
         outc.appendPayloadInt(450);  // 6
@@ -2875,6 +3139,94 @@ class IntelliCenterPumpCommands extends PumpCommands {
     }
 }
 class IntelliCenterBodyCommands extends BodyCommands {
+    private bodyHeatSettings: {
+        processing: boolean,
+        bytes: number[],
+        body1: { heatMode: number, heatSetpoint: number, coolSetpoint: number },
+        body2: { heatMode: number, heatSetpoint: number, coolSetpoint: number }
+    };
+    private async queueBodyHeatSettings(bodyId?: number, byte?: number, data?: any): Promise<Boolean> {
+        if (typeof this.bodyHeatSettings === 'undefined') {
+            let body1 = sys.bodies.getItemById(1);
+            let body2 = sys.bodies.getItemById(2);
+            this.bodyHeatSettings = {
+                processing: false,
+                bytes: [],
+                body1: { heatMode: body1.heatMode || 1, heatSetpoint: body1.heatSetpoint || 78, coolSetpoint: body1.coolSetpoint || 100 },
+                body2: { heatMode: body2.heatMode || 1, heatSetpoint: body2.heatSetpoint || 78, coolSetpoint: body2.coolSetpoint || 100 }
+            }
+        }
+        let bhs = this.bodyHeatSettings;
+        if (typeof data !== 'undefined' && typeof bodyId !== 'undefined' && bodyId > 0) {
+            let body = bodyId === 2 ? bhs.body2 : bhs.body1;
+            if (!bhs.bytes.includes(byte) && byte) bhs.bytes.push(byte);
+            if (typeof data.heatSetpoint !== 'undefined') body.heatSetpoint = data.heatSetpoint;
+            if (typeof data.coolSetpoint !== 'undefined') body.coolSetpoint = data.coolSetpoint;
+            if (typeof data.heatMode !== 'undefined') body.heatMode = data.heatMode;
+        }
+        if (!bhs.processing && bhs.bytes.length > 0) {
+            bhs.processing = true;
+            let byte2 = bhs.bytes.shift();
+            let fnToByte = function (num) { return num < 0 ? Math.abs(num) | 0x80 : Math.abs(num) || 0; };
+            let payload = [0, 0, byte2, 1,
+                fnToByte(sys.equipment.tempSensors.getCalibration('water1')),
+                fnToByte(sys.equipment.tempSensors.getCalibration('solar1')),
+                fnToByte(sys.equipment.tempSensors.getCalibration('air')),
+                fnToByte(sys.equipment.tempSensors.getCalibration('water2')),
+                fnToByte(sys.equipment.tempSensors.getCalibration('solar2')),
+                fnToByte(sys.equipment.tempSensors.getCalibration('water3')),
+                fnToByte(sys.equipment.tempSensors.getCalibration('solar3')),
+                fnToByte(sys.equipment.tempSensors.getCalibration('water4')),
+                fnToByte(sys.equipment.tempSensors.getCalibration('solar4')),
+                0,
+                0x10 | (sys.general.options.clockMode === 24 ? 0x40 : 0x00) | (sys.general.options.adjustDST ? 0x80 : 0x00) | (sys.general.options.clockSource === 'internet' ? 0x20 : 0x00),
+                89, 27, 110, 3, 0, 0,
+                bhs.body1.heatSetpoint, bhs.body1.coolSetpoint, bhs.body2.heatSetpoint, bhs.body2.coolSetpoint, bhs.body1.heatMode, bhs.body2.heatMode, 0, 0, 15,
+                sys.general.options.pumpDelay ? 1 : 0, sys.general.options.cooldownDelay ? 1 : 0, 0, 100, 0, 0, 0, 0, sys.general.options.manualPriority ? 1 : 0, sys.general.options.manualHeat ? 1 : 0, 0
+            ];
+            return new Promise<boolean>((resolve, reject) => {
+                let out = Outbound.create({
+                    action: 168,
+                    payload: payload,
+                    retries: 2,
+                    response: IntelliCenterBoard.getAckResponse(168),
+                    onComplete: (err, msg) => {
+                        bhs.processing = false;
+                        if (err) reject(err);
+                        else {
+                            let body1 = sys.bodies.getItemById(1);
+                            let sbody1 = state.temps.bodies.getItemById(1);
+                            body1.heatMode = sbody1.heatMode = bhs.body1.heatMode;
+                            body1.heatSetpoint = sbody1.heatSetpoint = bhs.body1.heatSetpoint;
+                            body1.coolSetpoint = sbody1.coolSetpoint = bhs.body1.coolSetpoint;
+                            if (sys.equipment.dual || sys.equipment.shared) {
+                                let body2 = sys.bodies.getItemById(2);
+                                let sbody2 = state.temps.bodies.getItemById(2);
+                                body2.heatMode = sbody2.heatMode = bhs.body2.heatMode;
+                                body2.heatSetpoint = sbody2.heatSetpoint = bhs.body2.heatSetpoint;
+                                body2.coolSetpoint = sbody2.coolSetpoint = bhs.body2.coolSetpoint;
+                            }
+                            state.emitEquipmentChanges();
+                            resolve(true);
+                        }
+                    }
+                });
+                conn.queueSendMessage(out);
+            });
+        }
+        else {
+            // Try every second to re-try if we have a bunch at once.
+            if (bhs.bytes.length > 0) {
+                setTimeout(async () => {
+                    try {
+                        await this.queueBodyHeatSettings();
+                    } catch (err) { logger.error(`Error sending queued body setpoint message: ${err.message}`); }
+                }, 3000);
+            }
+            else bhs.processing = false;
+            return true;
+        }
+    }
     public async setBodyAsync(obj: any): Promise<Body> {
         let byte = 0;
         let id = parseInt(obj.id, 10);
@@ -2945,40 +3297,53 @@ class IntelliCenterBodyCommands extends BodyCommands {
                     });
                 }
             }
+            if (typeof obj.showInDashBoard !== 'undefined') {
+                let sbody = state.temps.bodies.getItemById(id, false);
+                body.showInDashboard = sbody.showInDashboard = utils.makeBool(obj.showInDashboard);
+            }
             return Promise.resolve(body);
         }
         catch (err) { return Promise.reject(err); }
     }
     public async setHeatModeAsync(body: Body, mode: number): Promise<BodyTempState> {
+        let modes = sys.board.bodies.getHeatModes(body.id);
+        if (typeof modes.find(elem => elem.val === mode) === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot set heat mode to ${mode} since this is not a valid mode for the ${body.name}`, 'Body', mode));
+        await this.queueBodyHeatSettings(body.id, body.id === 2 ? 23 : 22, { heatMode: mode });
+        return state.temps.bodies.getItemById(body.id);
+        /*
+
+        let byte2 = 22;
+        let body1 = sys.bodies.getItemById(1);
+        let body2 = sys.bodies.getItemById(2);
+
+        let heat1 = body1.heatSetpoint || 78;
+        let cool1 = body1.coolSetpoint || 100;
+        let heat2 = body2.heatSetpoint || 78;
+        let cool2 = body2.coolSetpoint || 103;
+
+        let mode1 = body1.heatMode || 1;
+        let mode2 = body2.heatMode || 1;
+        let bitopts = 0;
+        if (sys.general.options.clockSource) bitopts += 32;
+        if (sys.general.options.clockMode === 24) bitopts += 64;
+        if (sys.general.options.adjustDST) bitopts += 128;
+
+        switch (body.id) {
+            case 1:
+                byte2 = 22;
+                mode1 = mode;
+                break;
+            case 2:
+                byte2 = 23;
+                mode2 = mode;
+                break;
+        }
         return new Promise<BodyTempState>((resolve, reject) => {
-            const self = this;
-            let byte2 = 18;
-            let mode1 = sys.bodies.getItemById(1).setPoint || 100;
-            let mode2 = sys.bodies.getItemById(2).setPoint || 100;
-            let mode3 = sys.bodies.getItemById(3).setPoint || 100;
-            let mode4 = sys.bodies.getItemById(4).setPoint || 100;
-            switch (body.id) {
-                case 1:
-                    byte2 = 22;
-                    mode1 = mode;
-                    break;
-                case 2:
-                    byte2 = 23;
-                    mode2 = mode;
-                    break;
-                case 3:
-                    byte2 = 24;
-                    mode3 = mode;
-                    break;
-                case 4:
-                    byte2 = 25;
-                    mode4 = mode;
-                    break;
-            }
             let out = Outbound.create({
                 action: 168,
-                payload: [0, 0, byte2, 1, 0, 0, 129, 0, 0, 0, 0, 0, 0, 0, 176, 89, 27, 110, 3, 0, 0, 100, 100, 100, 100, mode1, mode2, mode3, mode4, 15, 0
-                    , 0, 0, 0, 100, 0, 0, 0, 0, 0, 0],
+                payload: [0, 0, byte2, 1, 0, 0, 129, 0, 0, 0, 0, 0, 0, 0, bitopts, 89, 27, 110, 3, 0, 0,
+                    heat1, cool1, heat2, cool2, mode1, mode2, 0, 0, 15,
+                    sys.general.options.pumpDelay ? 1 : 0, sys.general.options.cooldownDelay ? 1 : 0, 0, 100, 0, 0, 0, 0, sys.general.options.manualPriority ? 1 : 0, sys.general.options.manualHeat ? 1 : 0, 0],
                 retries: 5,
                 response: IntelliCenterBoard.getAckResponse(168),
                 onComplete: (err, msg) => {
@@ -2994,36 +3359,36 @@ class IntelliCenterBodyCommands extends BodyCommands {
             })
             conn.queueSendMessage(out);
         });
+        */
     }
     public async setHeatSetpointAsync(body: Body, setPoint: number): Promise<BodyTempState> {
+        if (typeof setPoint === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot set heat setpoint to undefined for the ${body.name}`, 'Body', setPoint));
+        else if (setPoint < 0 || setPoint > 110) return Promise.reject(new InvalidEquipmentDataError(`Cannot set heat setpoint to ${setPoint} for the ${body.name}`, 'Body', setPoint));
+        await this.queueBodyHeatSettings(body.id, body.id === 2 ? 20 : 18, { heatSetpoint: setPoint });
+        return state.temps.bodies.getItemById(body.id);
+        /*
         let byte2 = 18;
         let body1 = sys.bodies.getItemById(1);
         let body2 = sys.bodies.getItemById(2);
-        let body3 = sys.bodies.getItemById(3);
-        let body4 = sys.bodies.getItemById(4);
 
-        let temp1 = sys.bodies.getItemById(1).setPoint || 100;
-        let temp2 = sys.bodies.getItemById(2).setPoint || 100;
-        let temp3 = sys.bodies.getItemById(3).setPoint || 100;
-        let temp4 = sys.bodies.getItemById(4).setPoint || 100;
+        let heat1 = body1.heatSetpoint || 78;
+        let cool1 = body1.coolSetpoint || 100;
+        let heat2 = body2.heatSetpoint || 78;
+        let cool2 = body2.coolSetpoint || 103;
         switch (body.id) {
             case 1:
                 byte2 = 18;
-                temp1 = setPoint;
+                heat1 = setPoint;
                 break;
             case 2:
                 byte2 = 20;
-                temp2 = setPoint;
-                break;
-            case 3:
-                byte2 = 19;
-                temp3 = setPoint;
-                break;
-            case 4:
-                byte2 = 21;
-                temp4 = setPoint;
+                heat2 = setPoint;
                 break;
         }
+        let bitopts = 0;
+        if (sys.general.options.clockSource) bitopts += 32;
+        if (sys.general.options.clockMode === 24) bitopts += 64;
+        if (sys.general.options.adjustDST) bitopts += 128;
         //                                                             6                             15       17 18        21   22       24 25 
         //[255, 0, 255][165, 63, 15, 16, 168, 41][0, 0, 18, 1, 0, 0, 129, 0, 0, 0, 0, 0, 0, 0, 176,  89, 27, 110, 3, 0, 0, 89, 100, 98, 100, 0, 0, 0, 0, 15, 0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0][5, 243]
         //[255, 0, 255][165, 63, 15, 16, 168, 41][0, 0, 18, 1, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0, 176, 235, 27, 167, 1, 0, 0, 89,  81, 98, 103, 5, 0, 0, 0, 15, 0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0][6, 48]
@@ -3031,8 +3396,8 @@ class IntelliCenterBodyCommands extends BodyCommands {
             action: 168,
             response: IntelliCenterBoard.getAckResponse(168),
             retries: 5,
-            payload: [0, 0, byte2, 1, 0, 0, 129, 0, 0, 0, 0, 0, 0, 0, 176, 89, 27, 110, 3, 0, 0,
-                temp1, temp3, temp2, temp4, body1.heatMode || 0, body2.heatMode || 0, body3.heatMode || 0, body4.heatMode || 0, 15,
+            payload: [0, 0, byte2, 1, 0, 0, 129, 0, 0, 0, 0, 0, 0, 0, bitopts, 89, 27, 110, 3, 0, 0,
+                heat1, cool1, heat2, cool2, body1.heatMode || 1, body2.heatMode || 1, 0, 0, 15,
                 sys.general.options.pumpDelay ? 1 : 0, sys.general.options.cooldownDelay ? 1 : 0, 0, 100, 0, 0, 0, 0, sys.general.options.manualPriority ? 1 : 0, sys.general.options.manualHeat ? 1 : 0, 0]
         });
         return new Promise<BodyTempState>((resolve, reject) => {
@@ -3046,25 +3411,22 @@ class IntelliCenterBodyCommands extends BodyCommands {
             };
             conn.queueSendMessage(out);
         });
+        */
     }
     public async setCoolSetpointAsync(body: Body, setPoint: number): Promise<BodyTempState> {
-        //[165, 1, 15, 16, 168, 41][0, 0, 19, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 176, 110, 30, 188, 3, 0, 0, 76, 99, 78, 100, 5, 5, 0, 0, 15, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0][5, 33]
+        if (typeof setPoint === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot set cooling setpoint to undefined for the ${body.name}`, 'Body', setPoint));
+        else if (setPoint < 0 || setPoint > 110) return Promise.reject(new InvalidEquipmentDataError(`Cannot set cooling setpoint to ${setPoint} for the ${body.name}`, 'Body', setPoint));
+        await this.queueBodyHeatSettings(body.id, body.id === 2 ? 21 : 19, { coolSetpoint: setPoint });
+        return state.temps.bodies.getItemById(body.id);
+        /*
         let byte2 = 19;
         let body1 = sys.bodies.getItemById(1);
         let body2 = sys.bodies.getItemById(2);
-        let body3 = sys.bodies.getItemById(3);
-        let body4 = sys.bodies.getItemById(3);
 
-        let temp1 = sys.bodies.getItemById(1).setPoint || 100;
-        let cool1 = sys.bodies.getItemById(1).coolSetpoint || 100;
-        let temp2 = sys.bodies.getItemById(2).setPoint || 100;
-        let cool2 = sys.bodies.getItemById(2).coolSetpoint || 100;
-
-        //Them
-        //[165, 63, 15, 16, 168, 41][0, 0, 19, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 176, 59, 30, 5, 5, 0, 0, 90, 102, 98, 81, 3, 1, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0][4, 129]
-        //Us
-        //[165, 63, 15, 33, 168, 40][0, 0, 19, 1, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0, 176, 89, 27, 5, 5, 0, 0, 90, 103, 98, 81, 3, 1, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0][5, 249]
-        //[165, 63, 15, 33, 168, 40][0, 0, 19, 1, 0, 0, 129, 0, 0, 0, 0, 0, 0, 0, 176, 89, 27, 110, 3, 0, 0, 90, 103, 98, 81, 3, 1, 0, 0, 15, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0][5, 249]
+        let heat1 = body1.heatSetpoint || 78;
+        let cool1 = body1.coolSetpoint || 100;
+        let heat2 = body2.heatSetpoint || 78;
+        let cool2 = body2.coolSetpoint || 103;
         switch (body.id) {
             case 1:
                 byte2 = 19;
@@ -3075,6 +3437,10 @@ class IntelliCenterBodyCommands extends BodyCommands {
                 cool2 = setPoint;
                 break;
         }
+        let bitopts = 0;
+        if (sys.general.options.clockSource) bitopts += 32;
+        if (sys.general.options.clockMode === 24) bitopts += 64;
+        if (sys.general.options.adjustDST) bitopts += 128;
         //                                                             6                             15       17 18        21   22       24 25 
         //[255, 0, 255][165, 63, 15, 16, 168, 41][0, 0, 18, 1, 0, 0, 129, 0, 0, 0, 0, 0, 0, 0, 176,  89, 27, 110, 3, 0, 0, 89, 100, 98, 100, 0, 0, 0, 0, 15, 0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0][5, 243]
         //[255, 0, 255][165, 63, 15, 16, 168, 41][0, 0, 18, 1, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0, 176, 235, 27, 167, 1, 0, 0, 89,  81, 98, 103, 5, 0, 0, 0, 15, 0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0][6, 48]
@@ -3082,8 +3448,8 @@ class IntelliCenterBodyCommands extends BodyCommands {
             action: 168,
             response: IntelliCenterBoard.getAckResponse(168),
             retries: 5,
-            payload: [0, 0, byte2, 1, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 176, 89, 27, 110, 3, 0, 0,
-                temp1, cool1, temp2, cool2, body1.heatMode || 0, body2.heatMode || 0, body3.heatMode || 0, body4.heatMode || 0, 15,
+            payload: [0, 0, byte2, 1, 0, 0, 129, 0, 0, 0, 0, 0, 0, 0, bitopts, 89, 27, 110, 3, 0, 0,
+                heat1, cool1, heat2, cool2, body1.heatMode || 1, body2.heatMode || 1, 0, 0, 15,
                 sys.general.options.pumpDelay ? 1 : 0, sys.general.options.cooldownDelay ? 1 : 0, 0, 100, 0, 0, 0, 0, sys.general.options.manualPriority ? 1 : 0, sys.general.options.manualHeat ? 1 : 0, 0]
         });
         return new Promise<BodyTempState>((resolve, reject) => {
@@ -3097,6 +3463,7 @@ class IntelliCenterBodyCommands extends BodyCommands {
             };
             conn.queueSendMessage(out);
         });
+        */
     }
 }
 class IntelliCenterScheduleCommands extends ScheduleCommands {
@@ -3177,6 +3544,8 @@ class IntelliCenterScheduleCommands extends ScheduleCommands {
                 out.retries = 5;
                 out.onComplete = (err, msg) => {
                     if (!err) {
+                        sched = sys.schedules.getItemById(id, true);
+                        ssched = state.schedules.getItemById(id, true);
                         sched.circuit = ssched.circuit = circuit;
                         sched.scheduleDays = ssched.scheduleDays = schedDays;
                         sched.scheduleType = ssched.scheduleType = schedType;
@@ -3229,7 +3598,7 @@ class IntelliCenterScheduleCommands extends ScheduleCommands {
                     , startDate.getMonth() + 1
                     , startDate.getDay() || 0
                     , startDate.getFullYear() - 2000
-                    , 32
+                    , 0 // This changed to 0 to mean no change in 1.047
                     , 78
                     , 100
                 ],
@@ -3273,15 +3642,14 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
         conn.queueSendMessage(out);
     }
     public async setHeaterAsync(obj: any): Promise<Heater> {
-        if (utils.makeBool(obj.isVirtual) || parseInt(obj.id, 10) > 255) return super.setHeaterAsync(obj);
+        if (obj.master === 1 || parseInt(obj.id, 10) > 255) return super.setHeaterAsync(obj);
         return new Promise<Heater>((resolve, reject) => {
             let id = typeof obj.id === 'undefined' ? -1 : parseInt(obj.id, 10);
             if (isNaN(id)) return reject(new InvalidEquipmentIdError('Heater Id is not valid.', obj.id, 'Heater'));
             let heater: Heater;
             if (id <= 0) {
-                // We are adding a heater.  In this case all heaters are virtual.
-                let vheaters = sys.heaters.filter(h => h.isVirtual);
-                id = vheaters.length + 1;
+                // We are adding a heater.  In this case we need to find the first id slot that is empty.
+                id = sys.heaters.getNextEquipmentId(new EquipmentIdRange(1, 16));
             }
             heater = sys.heaters.getItemById(id, false);
             let type = 0;
@@ -3388,7 +3756,6 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
                     heater.economyTime = economyTime;
                     heater.startTempDelta = startTempDelta;
                     heater.stopTempDelta = stopTempDelta;
-                    //hstate.isVirtual = heater.isVirtual = false;
                     heater.cooldownDelay = cooldownDelay;
                     sys.board.heaters.updateHeaterServices();
                     sys.board.heaters.syncHeaterStates();
@@ -3401,7 +3768,7 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
         });
     }
     public async deleteHeaterAsync(obj): Promise<Heater> {
-        if (utils.makeBool(obj.isVirtual) || obj.master === 1 || parseInt(obj.id, 10) > 255) return await super.deleteHeaterAsync(obj);
+        if (obj.master === 1 || parseInt(obj.id, 10) > 255) return await super.deleteHeaterAsync(obj);
         return new Promise<Heater>((resolve, reject) => {
             let id = parseInt(obj.id, 10);
             if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError('Cannot delete.  Heater Id is not valid.', obj.id, 'Heater'));
@@ -3443,6 +3810,8 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
         let heatPumpInstalled = htypes.heatpump > 0;
         let gasHeaterInstalled = htypes.gas > 0;
         let ultratempInstalled = htypes.ultratemp > 0;
+        let mastertempInstalled = htypes.mastertemp > 0;
+
 
         // RKS: 09-26-20 This is a hack to maintain backward compatability with fw versions 1.04 and below.  Ultratemp is not
         // supported on 1.04 and below.
@@ -3466,9 +3835,10 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
             // 3 = Solar Heater
             // 4 = Solar Preferred
             // 5 = Heat Pump
-           
+
             if (sys.heaters.length > 0) sys.board.valueMaps.heatSources = new byteValueMap([[1, { name: 'off', desc: 'Off' }]]);
             if (gasHeaterInstalled) sys.board.valueMaps.heatSources.merge([[2, { name: 'heater', desc: 'Heater' }]]);
+            if (mastertempInstalled) sys.board.valueMaps.heatSources.merge([[11, { name: 'mtheater', desc: 'MasterTemp' }]]);
             if (solarInstalled && (gasHeaterInstalled || heatPumpInstalled)) sys.board.valueMaps.heatSources.merge([[3, { name: 'solar', desc: 'Solar Only', hasCoolSetpoint: htypes.hasCoolSetpoint }], [4, { name: 'solarpref', desc: 'Solar Preferred', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
             else if (solarInstalled) sys.board.valueMaps.heatSources.merge([[3, { name: 'solar', desc: 'Solar', hasCoolsetpoint: htypes.hasCoolSetpoint }]]);
             if (heatPumpInstalled && (gasHeaterInstalled || solarInstalled)) sys.board.valueMaps.heatSources.merge([[9, { name: 'heatpump', desc: 'Heatpump Only' }], [25, { name: 'heatpumppref', desc: 'Heat Pump Pref' }]]);
@@ -3479,11 +3849,12 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
 
             sys.board.valueMaps.heatModes = new byteValueMap([[1, { name: 'off', desc: 'Off' }]]);
             if (gasHeaterInstalled) sys.board.valueMaps.heatModes.merge([[2, { name: 'heater', desc: 'Heater' }]]);
-            if (solarInstalled && (gasHeaterInstalled || heatPumpInstalled)) sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar Only' }], [4, { name: 'solarpref', desc: 'Solar Preferred' }]]);
+            if (mastertempInstalled) sys.board.valueMaps.heatModes.merge([[11, { name: 'mtheater', desc: 'MasterTemp' }]]);
+            if (solarInstalled && (gasHeaterInstalled || heatPumpInstalled || mastertempInstalled)) sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar Only' }], [4, { name: 'solarpref', desc: 'Solar Preferred' }]]);
             else if (solarInstalled) sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar' }]]);
-            if (ultratempInstalled && (gasHeaterInstalled || heatPumpInstalled)) sys.board.valueMaps.heatModes.merge([[5, { name: 'ultratemp', desc: 'UltraTemp Only'}], [6, { name: 'ultratemppref', desc: 'UltraTemp Pref' }]]);
+            if (ultratempInstalled && (gasHeaterInstalled || heatPumpInstalled || mastertempInstalled)) sys.board.valueMaps.heatModes.merge([[5, { name: 'ultratemp', desc: 'UltraTemp Only' }], [6, { name: 'ultratemppref', desc: 'UltraTemp Pref' }]]);
             else if (ultratempInstalled) sys.board.valueMaps.heatModes.merge([[5, { name: 'ultratemp', desc: 'UltraTemp' }]]);
-            if (heatPumpInstalled && (gasHeaterInstalled || solarInstalled)) sys.board.valueMaps.heatModes.merge([[9, { name: 'heatpump', desc: 'Heatpump Only' }], [25, { name: 'heatpumppref', desc: 'Heat Pump Preferred' }]]);
+            if (heatPumpInstalled && (gasHeaterInstalled || solarInstalled || mastertempInstalled)) sys.board.valueMaps.heatModes.merge([[9, { name: 'heatpump', desc: 'Heatpump Only' }], [25, { name: 'heatpumppref', desc: 'Heat Pump Preferred' }]]);
             else if (heatPumpInstalled) sys.board.valueMaps.heatModes.merge([[9, { name: 'heatpump', desc: 'Heat Pump' }]]);
         }
         else {
@@ -3515,7 +3886,7 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
 }
 class IntelliCenterValveCommands extends ValveCommands {
     public async setValveAsync(obj?: any): Promise<Valve> {
-        if (obj.isVirtual || obj.master === 1) return super.setValveAsync(obj);
+        if (obj.master === 1) return super.setValveAsync(obj);
         let id = parseInt(obj.id, 10);
         if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError('Valve Id has not been defined', obj.id, 'Valve'));
         let valve = sys.valves.getItemById(id);
@@ -3565,7 +3936,7 @@ export class IntelliCenterChemControllerCommands extends ChemControllerCommands 
         // Now lets do all our validation to the incoming chem controller data.
         let name = typeof data.name !== 'undefined' ? data.name : chem.name || `IntelliChem - ${address - 143}`;
         let type = sys.board.valueMaps.chemControllerTypes.transformByName('intellichem');
-        // So now we are down to the nitty gritty setting the data for the REM or Homegrown Chem controller.
+        // So now we are down to the nitty gritty setting the data for the REM Chem controller.
         let calciumHardness = typeof data.calciumHardness !== 'undefined' ? parseInt(data.calciumHardness, 10) : chem.calciumHardness;
         let cyanuricAcid = typeof data.cyanuricAcid !== 'undefined' ? parseInt(data.cyanuricAcid, 10) : chem.cyanuricAcid;
         let alkalinity = typeof data.alkalinity !== 'undefined' ? parseInt(data.alkalinity, 10) : chem.alkalinity;
@@ -3588,24 +3959,24 @@ export class IntelliCenterChemControllerCommands extends ChemControllerCommands 
         }
         if (isNaN(pHSetpoint) || pHSetpoint > type.ph.max || pHSetpoint < type.ph.min) Promise.reject(new InvalidEquipmentDataError(`Invalid pH setpoint`, 'ph.setpoint', pHSetpoint));
         if (isNaN(orpSetpoint) || orpSetpoint > type.orp.max || orpSetpoint < type.orp.min) Promise.reject(new InvalidEquipmentDataError(`Invalid orp setpoint`, 'orp.setpoint', orpSetpoint));
-        let phTolerance = typeof data.ph.tolerance !== 'undefined' ? data.ph.tolerance : chem.ph.tolerance;
-        let orpTolerance = typeof data.orp.tolerance !== 'undefined' ? data.orp.tolerance : chem.orp.tolerance;
-        if (typeof data.ph.tolerance !== 'undefined') {
+        let phTolerance = typeof data.ph !== 'undefined' && typeof data.ph.tolerance !== 'undefined' ? data.ph.tolerance : chem.ph.tolerance;
+        let orpTolerance = typeof data.orp !== 'undefined' && typeof data.orp.tolerance !== 'undefined' ? data.orp.tolerance : chem.orp.tolerance;
+        if (typeof data.ph !== 'undefined' && typeof data.ph.tolerance !== 'undefined') {
             if (typeof data.ph.tolerance.enabled !== 'undefined') phTolerance.enabled = utils.makeBool(data.ph.tolerance.enabled);
             if (typeof data.ph.tolerance.low !== 'undefined') phTolerance.low = parseFloat(data.ph.tolerance.low);
             if (typeof data.ph.tolerance.high !== 'undefined') phTolerance.high = parseFloat(data.ph.tolerance.high);
             if (isNaN(phTolerance.low)) phTolerance.low = type.ph.min;
             if (isNaN(phTolerance.high)) phTolerance.high = type.ph.max;
         }
-        if (typeof data.orp.tolerance !== 'undefined') {
+        if (typeof data.orp !== 'undefined' && typeof data.orp.tolerance !== 'undefined') {
             if (typeof data.orp.tolerance.enabled !== 'undefined') orpTolerance.enabled = utils.makeBool(data.orp.tolerance.enabled);
             if (typeof data.orp.tolerance.low !== 'undefined') orpTolerance.low = parseFloat(data.orp.tolerance.low);
             if (typeof data.orp.tolerance.high !== 'undefined') orpTolerance.high = parseFloat(data.orp.tolerance.high);
             if (isNaN(orpTolerance.low)) orpTolerance.low = type.orp.min;
             if (isNaN(orpTolerance.high)) orpTolerance.high = type.orp.max;
         }
-        let phEnabled = typeof data.ph.enabled !== 'undefined' ? utils.makeBool(data.ph.enabled) : chem.ph.enabled;
-        let orpEnabled = typeof data.orp.enabled !== 'undefined' ? utils.makeBool(data.orp.enabled) : chem.orp.enabled;
+        let phEnabled = typeof data.ph !== 'undefined' && typeof data.ph.enabled !== 'undefined' ? utils.makeBool(data.ph.enabled) : chem.ph.enabled;
+        let orpEnabled = typeof data.orp !== 'undefined' && typeof data.orp.enabled !== 'undefined' ? utils.makeBool(data.orp.enabled) : chem.orp.enabled;
         let siCalcType = typeof data.siCalcType !== 'undefined' ? sys.board.valueMaps.siCalcTypes.encode(data.siCalcType, 0) : chem.siCalcType;
 
         let saltLevel = (state.chlorinators.length > 0) ? state.chlorinators.getItemById(1).saltLevel || 1000 : 1000
@@ -3613,14 +3984,18 @@ export class IntelliCenterChemControllerCommands extends ChemControllerCommands 
         chem.orp.tank.capacity = 6;
         let acidTankLevel = typeof data.ph !== 'undefined' && typeof data.ph.tank !== 'undefined' && typeof data.ph.tank.level !== 'undefined' ? parseInt(data.ph.tank.level, 10) : schem.ph.tank.level;
         let orpTankLevel = typeof data.orp !== 'undefined' && typeof data.orp.tank !== 'undefined' && typeof data.orp.tank.level !== 'undefined' ? parseInt(data.orp.tank.level, 10) : schem.orp.tank.level;
+        //Them
+        //[255, 0, 255][165, 63, 15, 16, 168, 20][8, 0, 0, 32, 1, 144, 1, 248, 2, 144, 1, 1, 1, 29, 0, 0, 0, 100, 0, 0][4, 135]
+        //Us
+        //[255, 0, 255][165,  0, 15, 33, 168, 20][8, 0, 0, 32, 1, 144, 1, 248, 2, 144, 1, 1, 1, 33, 0, 0, 0, 100, 0, 0][4, 93]
         return new Promise<ChemController>((resolve, reject) => {
             let out = Outbound.create({
-                protocol: Protocol.IntelliChem,
+                protocol: Protocol.Broadcast,
                 action: 168,
                 payload: [],
                 retries: 3, // We are going to try 4 times.
                 response: IntelliCenterBoard.getAckResponse(168),
-                onAbort: () => { },
+                //onAbort: () => { },
                 onComplete: (err) => {
                     if (err) reject(err);
                     else {
@@ -3655,172 +4030,29 @@ export class IntelliCenterChemControllerCommands extends ChemControllerCommands 
                     }
                 }
             });
+            
             //[8, 0, chem.id - 1, body.val, 1, chem.address, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0]
-            out.insertPayloadBytes(0, 0, 18);
+            out.insertPayloadBytes(0, 0, 20);
             out.setPayloadByte(0, 8);
             out.setPayloadByte(1, 0);
             out.setPayloadByte(2, chem.id - 1);
             out.setPayloadByte(3, body.val);
-            out.setPayloadByte(4, 1);
+            out.setPayloadByte(4, acidTankLevel + 1);
             out.setPayloadByte(5, address);
             out.setPayloadByte(6, 1);
             out.setPayloadInt(7, Math.round(pHSetpoint * 100), 700);
             out.setPayloadInt(9, orpSetpoint, 400);
             out.setPayloadByte(11, 1);
             out.setPayloadByte(12, 1);
+            //out.setPayloadByte(11, acidTankLevel + 1, 1);
+            //out.setPayloadByte(12, orpTankLevel + 1, 1);
+
             out.setPayloadInt(13, calciumHardness, 25);
             out.setPayloadInt(15, cyanuricAcid, 0);
             out.setPayloadInt(17, alkalinity, 25);
             conn.queueSendMessage(out);
         });
     }
-
-    //protected async setIntelliChemStateAsync(data: any): Promise<ChemControllerState> {
-    //    try {
-    //        // This is a protected method so the id will always be valid if we made it here. Do
-    //        // one more check since we cannot lock a thread.
-    //        let chem = sys.chemControllers.find(elem => elem.id === data.id);
-    //        if (typeof chem === 'undefined') return Promise.reject(`A valid IntelliChem controller could not be found at id ${data.id}`);
-    //        // If we are virtual send it back to the SystemBoard for processing.
-    //        if (chem.master !== 0) return super.setIntelliChemStateAsync(data);
-    //        let address = typeof data.address !== 'undefined' ? parseInt(data.address, 10) : chem.address;
-    //        if (typeof address === 'undefined' || isNaN(address) || (address < 144 || address > 158)) return Promise.reject(new InvalidEquipmentDataError(`Invalid IntelliChem address`, 'chemController', address));
-    //        let pHSetpoint = typeof data.ph !== 'undefined' && typeof data.ph.setpoint !== 'undefined' ? parseFloat(data.ph.setpoint) : chem.ph.setpoint;
-    //        let orpSetpoint = typeof data.orp !== 'undefined' && typeof data.orp.setpoint !== 'undefined' ? parseInt(data.orp.setpoint, 10) : chem.orp.setpoint;
-    //        let calciumHardness = typeof data.calciumHardness !== 'undefined' ? parseInt(data.calciumHardness, 10) : chem.calciumHardness;
-    //        let cyanuricAcid = typeof data.cyanuricAcid !== 'undefined' ? parseInt(data.cyanuricAcid, 10) : chem.cyanuricAcid;
-    //        let alkalinity = typeof data.alkalinity !== 'undefined' ? parseInt(data.alkalinity, 10) : chem.alkalinity;
-    //        let body = sys.board.bodies.mapBodyAssociation(typeof data.body === 'undefined' ? chem.body : data.body);
-    //        if (typeof body === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Invalid body assignment`, 'chemController', data.body || chem.body));
-    //        // Do a final validation pass so we dont send this off in a mess.
-    //        if (isNaN(pHSetpoint)) return Promise.reject(new InvalidEquipmentDataError(`Invalid pH Setpoint`, 'chemController', pHSetpoint));
-    //        if (isNaN(orpSetpoint)) return Promise.reject(new InvalidEquipmentDataError(`Invalid orp Setpoint`, 'chemController', orpSetpoint));
-    //        if (isNaN(calciumHardness)) return Promise.reject(new InvalidEquipmentDataError(`Invalid calcium hardness`, 'chemController', calciumHardness));
-    //        if (isNaN(cyanuricAcid)) return Promise.reject(new InvalidEquipmentDataError(`Invalid cyanuric acid`, 'chemController', cyanuricAcid));
-    //        if (isNaN(alkalinity)) return Promise.reject(new InvalidEquipmentDataError(`Invalid alkalinity`, 'chemController', alkalinity));
-    //        return new Promise<ChemControllerState>(async (resolve, reject) => {
-    //            let out = Outbound.create({
-    //                action: 168,
-    //                response: IntelliCenterBoard.getAckResponse(168),
-    //                retries: 3,
-    //                payload: [8, 0, chem.id - 1, body.val, 1, chem.address, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0],
-    //                onComplete: (err) => {
-    //                    if (err) { reject(err); }
-    //                    else {
-    //                        let cstate = state.chemControllers.getItemById(chem.id, true);
-    //                        chem.isActive = true;
-    //                        chem.isVirtual = false;
-    //                        //chem.address = address;
-    //                        chem.body = body;
-    //                        chem.calciumHardness = calciumHardness;
-    //                        chem.orp.setpoint = cstate.orp.setpoint = orpSetpoint;
-    //                        chem.ph.setpoint = cstate.ph.setpoint = pHSetpoint;
-    //                        chem.cyanuricAcid = cyanuricAcid;
-    //                        chem.alkalinity = alkalinity;
-    //                        chem.type = 2;
-    //                        chem.name = typeof chem.name === 'undefined' ? `IntelliChem ${chem.id}` : chem.name;
-    //                        chem.ph.tank.capacity = chem.orp.tank.capacity = 6;
-    //                        chem.ph.tank.units = chem.orp.tank.units = '';
-    //                        cstate.body = chem.body;
-    //                        cstate.address = chem.address;
-    //                        cstate.name = chem.name;
-    //                        cstate.type = chem.type;
-    //                        cstate.isActive = chem.isActive;
-    //                        resolve(cstate);
-    //                    }
-    //                }
-    //            });
-    //            out.setPayloadInt(7, Math.round(pHSetpoint * 100), 700);
-    //            out.setPayloadInt(9, orpSetpoint, 400);
-    //            out.setPayloadInt(13, calciumHardness, 25);
-    //            out.setPayloadInt(15, cyanuricAcid, 0);
-    //            out.setPayloadInt(17, alkalinity, 25);
-    //            conn.queueSendMessage(out);
-    //        });
-    //    }
-    //    catch (err) { return Promise.reject(err); }
-    //}
-    //protected async setIntelliChemAsync(data: any): Promise<ChemController> {
-    //    try {
-    //        // This is a protected method so the id will always be valid if we made it here. Do
-    //        // one more check since we cannot lock a thread.
-    //        let chem = sys.chemControllers.find(elem => elem.id === data.id);
-    //        let ichemType = sys.board.valueMaps.chemControllerTypes.encode('intellichem');
-    //        if (typeof chem === 'undefined') {
-    //            // We are adding an IntelliChem.  Check to see how many intellichems we have.
-    //            let arr = sys.chemControllers.toArray();
-    //            let count = 0;
-    //            for (let i = 0; i < arr.length; i++) {
-    //                let cc: ChemController = arr[i];
-    //                if (cc.type === ichemType) count++;
-    //            }
-    //            if (count >= sys.equipment.maxChemControllers) return Promise.reject(new InvalidEquipmentDataError(`The max number of IntelliChem controllers has been reached: ${sys.equipment.maxChemControllers}`, 'chemController', sys.equipment.maxChemControllers));
-    //            let id = (sys.chemControllers.getMaxId() || 0) + 1;
-    //            chem = sys.chemControllers.getItemById(id);
-    //        }
-    //        let address = typeof data.address !== 'undefined' ? parseInt(data.address, 10) : chem.address;
-    //        if (typeof address === 'undefined' || isNaN(address) || (address < 144 || address > 158)) return Promise.reject(new InvalidEquipmentDataError(`Invalid IntelliChem address`, 'chemController', address));
-    //        if (typeof sys.chemControllers.find(elem => elem.id !== data.id && elem.type === ichemType && elem.address === address) !== 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Invalid IntelliChem address: Address is used on another IntelliChem`, 'chemController', address));
-    //        let pHSetpoint = typeof data.ph.setpoint !== 'undefined' ? parseFloat(data.ph.setpoint) : chem.ph.setpoint;
-    //        let orpSetpoint = typeof data.orp.setpoint !== 'undefined' ? parseInt(data.orp.setpoint, 10) : chem.orp.setpoint;
-    //        let calciumHardness = typeof data.calciumHardness !== 'undefined' ? parseInt(data.calciumHardness, 10) : chem.calciumHardness;
-    //        let cyanuricAcid = typeof data.cyanuricAcid !== 'undefined' ? parseInt(data.cyanuricAcid, 10) : chem.cyanuricAcid;
-    //        let alkalinity = typeof data.alkalinity !== 'undefined' ? parseInt(data.alkalinity, 10) : chem.alkalinity;
-    //        let body = sys.board.bodies.mapBodyAssociation(typeof data.body === 'undefined' ? chem.body : data.body);
-    //        let name = typeof data.name === 'undefined' ? chem.name || `IntelliChem ${chem.id}` : data.name;
-    //        if (typeof body === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Invalid body assignment`, 'chemController', data.body || chem.body));
-    //        // Do a final validation pass so we dont send this off in a mess.
-    //        if (isNaN(address)) return Promise.reject(new InvalidEquipmentDataError(`Invalid address ${data.address}`, 'chemController', data.address));
-    //        if (isNaN(pHSetpoint)) return Promise.reject(new InvalidEquipmentDataError(`Invalid pH Setpoint`, 'chemController', pHSetpoint));
-    //        if (isNaN(orpSetpoint)) return Promise.reject(new InvalidEquipmentDataError(`Invalid orp Setpoint`, 'chemController', orpSetpoint));
-    //        if (isNaN(calciumHardness)) return Promise.reject(new InvalidEquipmentDataError(`Invalid calcium hardness`, 'chemController', calciumHardness));
-    //        if (isNaN(cyanuricAcid)) return Promise.reject(new InvalidEquipmentDataError(`Invalid cyanuric acid`, 'chemController', cyanuricAcid));
-    //        if (isNaN(alkalinity)) return Promise.reject(new InvalidEquipmentDataError(`Invalid alkalinity`, 'chemController', alkalinity));
-
-    //        return new Promise<ChemController>(async (resolve, reject) => {
-    //            let out = Outbound.create({
-    //                action: 168,
-    //                response: IntelliCenterBoard.getAckResponse(168),
-    //                retries: 3,
-    //                payload: [8, 0, chem.id - 1, body.val, 1, address, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0],
-    //                onComplete: (err) => {
-    //                    if (err) { reject(err); }
-    //                    else {
-    //                        chem = sys.chemControllers.getItemById(chem.id, true);
-    //                        let cstate = state.chemControllers.getItemById(chem.id, true);
-    //                        chem.master = sys.board.equipmentMaster;
-    //                        chem.isActive = true;
-    //                        chem.isVirtual = false;
-    //                        chem.address = address;
-    //                        chem.body = body;
-    //                        chem.calciumHardness = calciumHardness;
-    //                        chem.orp.setpoint = cstate.orp.setpoint = orpSetpoint;
-    //                        chem.ph.setpoint = cstate.ph.setpoint = pHSetpoint;
-    //                        chem.cyanuricAcid = cyanuricAcid;
-    //                        chem.alkalinity = alkalinity;
-    //                        chem.type = 2;
-    //                        chem.name = name;
-    //                        chem.ph.tank.capacity = chem.orp.tank.capacity = 6;
-    //                        chem.ph.tank.units = chem.orp.tank.units = '';
-    //                        cstate.body = chem.body;
-    //                        cstate.address = chem.address;
-    //                        cstate.name = chem.name;
-    //                        cstate.type = chem.type;
-    //                        cstate.isActive = chem.isActive;
-    //                        resolve(chem);
-    //                    }
-    //                }
-    //            });
-    //            out.setPayloadInt(7, Math.round(pHSetpoint * 100), 700);
-    //            out.setPayloadInt(9, Math.floor(orpSetpoint), 400);
-    //            out.setPayloadInt(13, Math.floor(calciumHardness), 25);
-    //            out.setPayloadInt(15, Math.floor(cyanuricAcid), 0);
-    //            out.setPayloadInt(17, Math.floor(alkalinity), 25);
-    //            conn.queueSendMessage(out);
-    //        });
-    //    }
-    //    catch (err) { return Promise.reject(err); }
-    //}
     public async deleteChemControllerAsync(data: any): Promise<ChemController> {
         let id = typeof data.id !== 'undefined' ? parseInt(data.id, 10) : -1;
         if (typeof id === 'undefined' || isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid Chem Controller Id`, id, 'chemController'));

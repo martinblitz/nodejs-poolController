@@ -14,43 +14,46 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-import * as path from "path";
-import * as fs from "fs";
-import express = require('express');
-import { utils } from "../controller/Constants";
-import { config } from "../config/Config";
-import { logger } from "../logger/Logger";
-import { Namespace, RemoteSocket, Server as SocketIoServer, Socket } from "socket.io";
-import { io as sockClient } from "socket.io-client";
-import { ConfigRoute } from "./services/config/Config";
-import { StateRoute } from "./services/state/State";
-import { StateSocket } from "./services/state/StateSocket";
-import { UtilitiesRoute } from "./services/utilities/Utilities";
-import * as http2 from "http2";
-import * as http from "http";
-import * as https from "https";
-import { state } from "../controller/State";
-import { conn } from "../controller/comms/Comms";
-import { Inbound, Outbound } from "../controller/comms/messages/Messages";
+import * as dns from "dns";
 import { EventEmitter } from 'events';
-import { sys } from '../controller/Equipment';
+import * as fs from "fs";
+import * as http from "http";
+import * as http2 from "http2";
+import * as https from "https";
 import * as multicastdns from 'multicast-dns';
 import * as ssdp from 'node-ssdp';
 import * as os from 'os';
+import * as path from "path";
+import { RemoteSocket, Server as SocketIoServer, Socket } from "socket.io";
+import { io as sockClient } from "socket.io-client";
 import { URL } from "url";
+import { config } from "../config/Config";
+import { conn } from "../controller/comms/Comms";
+import { Inbound, Outbound } from "../controller/comms/messages/Messages";
+import { Timestamp, utils } from "../controller/Constants";
+import { sys } from '../controller/Equipment';
+import { state } from "../controller/State";
+import { logger } from "../logger/Logger";
 import { HttpInterfaceBindings } from './interfaces/httpInterface';
 import { InfluxInterfaceBindings } from './interfaces/influxInterface';
 import { MqttInterfaceBindings } from './interfaces/mqttInterface';
-import { Timestamp } from '../controller/Constants';
-import extend = require("extend");
+import { ConfigRoute } from "./services/config/Config";
 import { ConfigSocket } from "./services/config/ConfigSocket";
+import { StateRoute } from "./services/state/State";
+import { StateSocket } from "./services/state/StateSocket";
+import { UtilitiesRoute } from "./services/utilities/Utilities";
+import express = require('express');
+import extend = require("extend");
 
 
 // This class serves data and pages for
 // external interfaces as well as an internal dashboard.
 export class WebServer {
+    public autoBackup = false;
+    public lastBackup;
     private _servers: ProtoServer[] = [];
     private family = 'IPv4';
+    private _autoBackupTimer: NodeJS.Timeout;
     constructor() { }
     public async init() {
         try {
@@ -86,6 +89,7 @@ export class WebServer {
                 }
             }
             this.initInterfaces(cfg.interfaces);
+
         } catch (err) { logger.error(`Error initializing web server ${err.message}`) }
     }
     public async initInterfaces(interfaces: any) {
@@ -101,6 +105,7 @@ export class WebServer {
                 let type = c.type || 'http';
                 logger.info(`Init ${type} interface: ${c.name}`);
                 switch (type) {
+                    case 'rest':
                     case 'http':
                         int = new HttpInterfaceServer(c.name, type);
                         int.init(c);
@@ -182,7 +187,7 @@ export class WebServer {
             if (this._servers[i].uuid === uuid) this._servers.splice(i, 1);
         }
     }
-    public async updateServerInterface(obj: any) {
+    public async updateServerInterface(obj: any): Promise<any> {
         let int = config.setInterface(obj);
         let srv = this.findServerByGuid(obj.uuid);
         // if server is not enabled; stop & remove it from local storage
@@ -196,6 +201,321 @@ export class WebServer {
                 this.initInterfaces(int);
             }
             else srv.init(obj);
+        }
+        return config.getInterfaceByUuid(obj.uuid);
+    }
+    public async initAutoBackup() {
+        try {
+            let bu = config.getSection('controller.backups');
+            this.autoBackup = false;
+            // These will be returned in reverse order with the newest backup first.
+            let files = await this.readBackupFiles();
+            let afiles = files.filter(elem => elem.options.automatic === true);
+            this.lastBackup = (afiles.length > 0) ? Date.parse(afiles[0].options.backupDate).valueOf() || 0 : 0;
+            // Set the last backup date.
+            this.autoBackup = utils.makeBool(bu.automatic);
+            if (this.autoBackup) {
+                let nextBackup = this.lastBackup + (bu.interval.days * 86400000) + (bu.interval.hours * 3600000);
+                logger.info(`Auto-backup initialized Last Backup: ${Timestamp.toISOLocal(new Date(this.lastBackup))} Next Backup: ${Timestamp.toISOLocal(new Date(nextBackup))}`);
+            }
+            else
+                logger.info(`Auto-backup initialized Last Backup: ${Timestamp.toISOLocal(new Date(this.lastBackup))}`);
+            // Lets wait a good 20 seconds before we auto-backup anything.  Now that we are initialized let the OCP have its way with everything.
+            setTimeout(() => { this.checkAutoBackup(); }, 20000);
+        }
+        catch (err) { logger.error(`Error initializing auto-backup: ${err.message}`); }
+    }
+    public async stopAutoBackup() {
+        this.autoBackup = false;
+        if (typeof this._autoBackupTimer !== 'undefined' || this._autoBackupTimer) clearTimeout(this._autoBackupTimer);
+    }
+    public async readBackupFiles(): Promise<BackupFile[]> {
+        try {
+            let backupDir = path.join(process.cwd(), 'backups');
+            let files = fs.readdirSync(backupDir);
+            let backups = [];
+            if (typeof files !== 'undefined') {
+                for (let i = 0; i < files.length; i++) {
+                    let file = files[i];
+                    if (path.extname(file) === '.zip') {
+                        let bf = await BackupFile.fromFile(path.join(backupDir, file));
+                        if (typeof bf !== 'undefined') backups.push(bf);
+                    }
+                }
+            }
+            backups.sort((a, b) => { return Date.parse(b.options.backupDate) - Date.parse(a.options.backupDate) });
+            return backups;
+        }
+        catch (err) { logger.error(`Error reading backup file directory: ${err.message}`); }
+    }
+    protected async extractBackupOptions(file: string | Buffer): Promise<{ file: string, options: any }> {
+        try {
+            let opts = { file: Buffer.isBuffer(file) ? 'Buffer' : file, options: {} as any };
+            let jszip = require("jszip");
+            let buff = Buffer.isBuffer(file) ? file : fs.readFileSync(file);
+            await jszip.loadAsync(buff).then(async (zip) => {
+                await zip.file('options.json').async('string').then((data) => {
+                    opts.options = JSON.parse(data);
+                    if (typeof opts.options.backupDate === 'undefined' && typeof file === 'string') {
+                        let name = path.parse(file).name;
+                        if (name.length === 19) {
+                            let date = name.substring(0, 10).replace(/-/g, '/');
+                            let time = name.substring(11).replace(/-/g, ':');
+                            let dt = Date.parse(`${date} ${time}`);
+                            if (!isNaN(dt)) opts.options.backupDate = Timestamp.toISOLocal(new Date(dt));
+                        }
+                    }
+                });
+            });
+            return opts;
+        } catch (err) { logger.error(`Error extracting backup options from ${file}: ${err.message}`); }
+    }
+    public async pruneAutoBackups(keepCount: number) {
+        try {
+            // We only automatically prune backups that njsPC put there in the first place so only
+            // look at auto-backup files.
+            let files = await this.readBackupFiles();
+            let afiles = files.filter(elem => elem.options.automatic === true);
+            if (afiles.length > keepCount) {
+                // Prune off the oldest backups until we get to our keep count.  When we read in the files
+                // these were sorted newest first.
+                while (afiles.length > keepCount) {
+                    let afile = afiles.pop();
+                    logger.info(`Pruning auto-backup file: ${afile.filePath}`);
+                    try {
+                        fs.unlinkSync(afile.filePath);
+                    } catch (err) { logger.error(`Error deleting auto-backup file: ${afile.filePath}`); }
+                }
+            }
+        } catch (err) { logger.error(`Error pruning auto-backups: ${err.message}`); }
+    }
+    public async backupServer(opts: any): Promise<BackupFile> {
+        let ret = new BackupFile();
+        ret.options = extend(true, {}, opts, { version: 1.1, errors: [] });
+        //{ file: '', options: extend(true, {}, opts, { version: 1.0, errors: [] }) };
+        let jszip = require("jszip");
+        function pad(n) { return (n < 10 ? '0' : '') + n; }
+        let zip = new jszip();
+        let ts = new Date();
+        let baseDir = process.cwd();
+        ret.filename = ts.getFullYear() + '-' + pad(ts.getMonth() + 1) + '-' + pad(ts.getDate()) + '_' + pad(ts.getHours()) + '-' + pad(ts.getMinutes()) + '-' + pad(ts.getSeconds()) + '.zip';
+        ret.filePath = path.join(baseDir, 'backups', ret.filename);
+        if (opts.njsPC === true) {
+            zip.folder('njsPC');
+            zip.folder('njsPC/data');
+            // Create the backup file and copy it into it.
+            zip.file('njsPC/config.json', fs.readFileSync(path.join(baseDir, 'config.json')));
+            zip.file('njsPC/data/poolConfig.json', fs.readFileSync(path.join(baseDir, 'data', 'poolConfig.json')));
+            zip.file('njsPC/data/poolState.json', fs.readFileSync(path.join(baseDir, 'data', 'poolState.json')));
+        }
+        if (typeof ret.options.servers !== 'undefined' && ret.options.servers.length > 0) {
+            // Back up all our servers.
+            for (let i = 0; i < ret.options.servers.length; i++) {
+                let srv = ret.options.servers[i];
+                if (typeof srv.errors === 'undefined') srv.errors = [];
+                if (srv.backup === false) continue;
+                let server = this.findServerByGuid(srv.uuid) as REMInterfaceServer;
+                if (typeof server === 'undefined') {
+                    srv.errors.push(`Could not find server ${srv.name} : ${srv.uuid}`);
+                    srv.success = false;
+                }
+                else if (!server.isConnected) {
+                    srv.success = false;
+                    srv.errors.push(`Server ${srv.name} : ${srv.uuid} not connected cannot back up`);
+                }
+                else {
+                    // Try to get the data from the server.
+                    zip.folder(server.name);
+                    zip.file(`${server.name}/serverConfig.json`, JSON.stringify(server.cfg));
+                    zip.folder(`${server.name}/data`);
+                    try {
+                        let resp = await server.getControllerConfig();
+                        if (typeof resp !== 'undefined') {
+                            if (resp.status.code === 200 && typeof resp.data !== 'undefined') {
+                                let ccfg = JSON.parse(resp.data);
+                                zip.file(`${server.name}/data/controllerConfig.json`, JSON.stringify(ccfg));
+                                srv.success = true;
+                            }
+                            else {
+                                srv.errors.push(`Error getting controller configuration: ${resp.error.message}`);
+                                srv.success = false;
+                            }
+                        }
+                        else {
+                            srv.success = false;
+                            srv.errors.push(`No response from server`);
+                        }
+                    } catch (err) { srv.success = false; srv.errors.push(`Could not obtain server configuration`); }
+                }
+            }
+        }
+        ret.options.backupDate = Timestamp.toISOLocal(ts);
+        zip.file('options.json', JSON.stringify(ret.options));
+        await zip.generateAsync({ type: 'nodebuffer' }).then(content => {
+            fs.writeFileSync(ret.filePath, content);
+            this.lastBackup = ts.valueOf();
+        });
+        return ret;
+    }
+    public async checkAutoBackup() {
+        if (typeof this._autoBackupTimer !== 'undefined' || this._autoBackupTimer) clearTimeout(this._autoBackupTimer);
+        this._autoBackupTimer = undefined;
+        let bu = config.getSection('controller.backups');
+        if (bu.automatic === true) {
+            if (typeof this.lastBackup === 'undefined' ||
+                (this.lastBackup < new Date().valueOf() - (bu.interval.days * 86400000) - (bu.interval.hours * 3600000))) {
+                bu.name = 'Automatic Backup';
+                await this.backupServer(bu);
+            }
+        }
+        else this.autoBackup = false;
+        if (this.autoBackup) {
+            await this.pruneAutoBackups(bu.keepCount);
+            let nextBackup = this.lastBackup + (bu.interval.days * 86400000) + (bu.interval.hours * 3600000);
+            setTimeout(async () => {
+                try {
+                    await this.checkAutoBackup();
+                } catch (err) { logger.error(`Error checking auto-backup: ${err.message}`); }
+            }, Math.max(Math.min(nextBackup - new Date().valueOf(), 2147483647), 60000));
+            logger.info(`Last auto-backup ${Timestamp.toISOLocal(new Date(this.lastBackup))} Next auto - backup ${Timestamp.toISOLocal(new Date(nextBackup))}`);
+        }
+    }
+    public async validateRestore(opts): Promise<any> {
+        try {
+            let stats = { njsPC: {}, servers: [] };
+            // Step 1: Extract all the files from the zip file.
+            let rest = await RestoreFile.fromFile(opts.filePath);
+            // Step 2: Validate the njsPC data against the board. The return
+            // from here shoudld give a very detailed view of what it is about to do.
+            if (opts.options.njsPC === true) {
+                stats.njsPC = await sys.board.system.validateRestore(rest.njsPC);
+            }
+            // Step 3: For each REM server we need to validate the restore
+            // file.
+            if (typeof opts.options.servers !== 'undefined' && opts.options.servers.length > 0) {
+                for (let i = 0; i < opts.options.servers.length; i++) {
+                    let s = opts.options.servers[i];
+                    if (s.restore) {
+                        let ctx: any = { server: { uuid: s.uuid, name: s.name, errors: [], warnings: [] } };
+                        // Check to see if the server is on-line. 
+                        // First, try by UUID.  
+                        let srv = this.findServerByGuid(s.uuid) as REMInterfaceServer;
+                        let cfg = rest.servers.find(elem => elem.uuid === s.uuid);
+                        // Second, try by host
+                        if (typeof srv === 'undefined' && parseFloat(opts.options.version) >= 1.1) {
+                            let srvs = this.findServersByType('rem') as REMInterfaceServer[];
+                            cfg = rest.servers.find(elem => elem.serverConfig.options.host === s.host);
+                            for (let j = 0; j < srvs.length; j++){
+                                if (srvs[j].cfg.options.host === cfg.serverConfig.options.host){
+                                    srv = srvs[j];
+                                    ctx.server.warnings.push(`REM Server from backup file (${srv.uuid}/${srv.cfg.options.host}) matched to current REM Server (${cfg.uuid}/${cfg.serverConfig.options.host}) by host name or IP and not UUID.  UUID in current config.json for REM will be updated.`)
+                                    break;
+                                }
+                            }
+                        } 
+                        stats.servers.push(ctx);
+                        if (typeof cfg === 'undefined' || typeof cfg.controllerConfig === 'undefined') ctx.server.errors.push(`Server configuration not found in zip file`);
+                        else if (typeof srv === 'undefined') ctx.server.errors.push(`Server ${s.name} is not enabled in njsPC cannot restore.`);
+                        else if (!srv.isConnected) ctx.server.errors.push(`Server ${s.name} is not connected or cannot be found by UUID and cannot restore.  If this is a version 1.0 file, update your current REM UUID to match the backup REM UUID.`);
+                        else {
+                            let resp = await srv.validateRestore(cfg.controllerConfig);
+                            if (typeof resp !== 'undefined') {
+                                if (resp.status.code === 200 && typeof resp.data !== 'undefined') {
+                                    let cctx = JSON.parse(resp.data);
+                                    ctx = extend(true, ctx, cctx);
+                                }
+                                else
+                                    ctx.server.errors.push(`Error validating controller configuration: ${resp.error.message}`);
+                            }
+                            else 
+                                ctx.server.errors.push(`No response from server`);
+                        }
+                    }
+
+                }
+            }
+           
+            return stats;
+        } catch (err) { logger.error(`Error validating restore options: ${err.message}`); return Promise.reject(err);}
+    }
+    public async restoreServers(opts): Promise<any> {
+        let stats: { backupOptions?: any, njsPC?: RestoreResults, servers: any[] } = { servers: [] };
+        try {
+            // Step 1: Extract all the files from the zip file.
+            let rest = await RestoreFile.fromFile(opts.filePath);
+            stats.backupOptions = rest.options;
+            // Step 2: Validate the njsPC data against the board. The return
+            // from here shoudld give a very detailed view of what it is about to do.
+            if (opts.options.njsPC === true) {
+                logger.info(`Begin Restore njsPC`);
+                stats.njsPC = await sys.board.system.restore(rest.njsPC);
+                logger.info(`End Restore njsPC`);
+            }
+            // Step 3: For each REM server we need to validate the restore
+            // file.
+            if (typeof opts.options.servers !== 'undefined' && opts.options.servers.length > 0) {
+                for (let i = 0; i < opts.options.servers.length; i++) {
+                    let s = opts.options.servers[i];
+                    if (s.restore) {
+                        // Check to see if the server is on-line.
+                        let srv = this.findServerByGuid(s.uuid) as REMInterfaceServer;
+                        let cfg = rest.servers.find(elem => elem.uuid === s.uuid);
+                        let ctx: any = { server: { uuid: s.uuid, name: s.name, errors: [], warnings: [] } };
+                        if (typeof srv === 'undefined' && parseFloat(opts.options.version) >= 1.1) {
+                            let srvs = this.findServersByType('rem') as REMInterfaceServer[];
+                            cfg = rest.servers.find(elem => elem.serverConfig.options.host === s.host);
+                            for (let j = 0; j < srvs.length; j++){
+                                if (srvs[j].cfg.options.host === cfg.serverConfig.options.host){
+                                    srv = srvs[j];
+                                    let oldSrvCfg = srv.cfg;
+                                    oldSrvCfg.enabled = false;
+                                    await this.updateServerInterface(oldSrvCfg); // unload prev server interface
+                                    srv.uuid = srv.cfg.uuid = cfg.uuid;
+                                    config.setSection('web.interfaces.rem', cfg.serverConfig);
+                                    await this.updateServerInterface(cfg.serverConfig); // reset server interface
+                                    srv = this.findServerByGuid(s.uuid) as REMInterfaceServer;
+                                    logger.info(`Restore REM: Current UUID updated to UUID of backup.`);
+                                    break;
+                                }
+                            }
+                        }
+                        stats.servers.push(ctx);
+                        if (!srv.isConnected) await utils.sleep(6000); // rem server waits to connect 5s before isConnected will be true. Server.ts#1256 = REMInterfaceServer.init();  What's a better way to do this?
+                        if (typeof cfg === 'undefined' || typeof cfg.controllerConfig === 'undefined') ctx.server.errors.push(`Server configuration not found in zip file`);
+                        else if (typeof srv === 'undefined') ctx.server.errors.push(`Server ${s.name} is not enabled in njsPC cannot restore.`);
+                        else if (!srv.isConnected) ctx.server.errors.push(`Server ${s.name} is not connected cannot restore.`);
+                        else {
+                            let resp = await srv.validateRestore(cfg.controllerConfig);
+                            if (typeof resp !== 'undefined') {
+                                if (resp.status.code === 200 && typeof resp.data !== 'undefined') {
+                                    let cctx = JSON.parse(resp.data);
+                                    ctx = extend(true, ctx, cctx);
+                                    // Ok so now here we are ready to restore the data.
+                                    let r = await srv.restoreConfig(cfg.controllerConfig);
+
+                                }
+                                else
+                                    ctx.server.errors.push(`Error validating controller configuration: ${resp.error.message}`);
+                            }
+                            else
+                                ctx.server.errors.push(`No response from server`);
+                        }
+                    }
+
+                }
+            }
+
+            return stats;
+        } catch (err) { logger.error(`Error validating restore options: ${err.message}`); return Promise.reject(err); }
+        finally {
+            try {
+                let baseDir = process.cwd();
+                let ts = new Date();
+                function pad(n) { return (n < 10 ? '0' : '') + n; }
+                let filename = 'restoreLog(' + ts.getFullYear() + '-' + pad(ts.getMonth() + 1) + '-' + pad(ts.getDate()) + '_' + pad(ts.getHours()) + '-' + pad(ts.getMinutes()) + '-' + pad(ts.getSeconds()) + ').log';
+                let filePath = path.join(baseDir, 'logs', filename);
+                fs.writeFileSync(filePath, JSON.stringify(stats, undefined, 3));
+            } catch (err) { logger.error(`Error writing restore log ${err.message}`); }
         }
     }
 }
@@ -243,7 +563,7 @@ export class HttpServer extends ProtoServer {
     public app: express.Application;
     public server: http.Server;
     public sockServer: SocketIoServer<ClientToServerEvents, ServerToClientEvents>;
-    private _sockets: RemoteSocket<ServerToClientEvents>[] = [];
+    private _sockets: RemoteSocket<ServerToClientEvents, any>[] = [];
     public emitToClients(evt: string, ...data: any) {
         if (this.isRunning) {
             this.sockServer.emit(evt, ...data);
@@ -298,48 +618,28 @@ export class HttpServer extends ProtoServer {
             self._sockets = await self.sockServer.fetchSockets();
         });
         sock.on('echo', (msg) => { sock.emit('echo', msg); });
-        sock.on('receivePacketRaw', function (incomingPacket: any[]) {
-            //var str = 'Add packet(s) to incoming buffer: ';
-            logger.silly('User request (replay.html) to RECEIVE packet: %s', JSON.stringify(incomingPacket));
-            for (var i = 0; i < incomingPacket.length; i++) {
-                conn.buffer.pushIn(Buffer.from(incomingPacket[i]));
-                // str += JSON.stringify(incomingPacket[i]) + ' ';
-            }
-            //logger.info(str);
-        });
-        sock.on('replayPackets', function (inboundPkts: number[][]) {
-            // used for replay
-            logger.debug(`Received replayPackets: ${inboundPkts}`);
-            inboundPkts.forEach(inbound => {
-                conn.buffer.pushIn(Buffer.from([].concat.apply([], inbound)));
-                // conn.queueInboundMessage([].concat.apply([], inbound));
-            });
-        });
-        sock.on('sendPackets', function (bytesToProcessArr: number[][]) {
-            // takes an input of bytes (src/dest/action/payload) and sends
-            if (!bytesToProcessArr.length) return;
-            logger.silly('User request (replay.html) to SEND packet: %s', JSON.stringify(bytesToProcessArr));
-
-            do {
-                let bytesToProcess: number[] = bytesToProcessArr.shift();
-
-                // todo: logic for chlor packets
-                let out = Outbound.create({
-                    source: bytesToProcess.shift(),
-                    dest: bytesToProcess.shift(),
-                    action: bytesToProcess.shift(),
-                    payload: bytesToProcess.splice(1, bytesToProcess[0])
-                });
-                conn.queueSendMessage(out);
-            } while (bytesToProcessArr.length > 0);
-
-        });
         sock.on('sendOutboundMessage', (mdata) => {
             let msg: Outbound = Outbound.create({});
             Object.assign(msg, mdata);
             msg.calcChecksum();
             logger.silly(`sendOutboundMessage ${msg.toLog()}`);
             conn.queueSendMessage(msg);
+        });
+        sock.on('sendInboundMessage', (mdata) => {
+            try {
+
+                let msg: Inbound = new Inbound();
+                msg.direction = mdata.direction;
+                msg.header = mdata.header;
+                msg.payload = mdata.payload;
+                msg.preamble = mdata.preamble;
+                msg.protocol = mdata.protocol;
+                msg.term = mdata.term;
+                if (msg.isValid) msg.process();
+            }
+            catch (err){
+                logger.error(`Error replaying packet: ${err.message}`);
+            }
         });
         sock.on('sendLogMessages', function (sendMessages: boolean) {
             console.log(`sendLogMessages set to ${sendMessages}`);
@@ -451,7 +751,7 @@ export class HttpServer extends ProtoServer {
     }
 }
 export class HttpsServer extends HttpServer {
-    public server: https.Server;
+    declare server: https.Server;
 
     public async init(cfg) {
         // const auth = require('http-auth');
@@ -927,6 +1227,23 @@ export class REMInterfaceServer extends ProtoServer {
             }, 5000);
         }
     }
+    public async getControllerConfig() : Promise<InterfaceServerResponse> {
+        try {
+            let response = await this.sendClientRequest('GET', '/config/backup/controller', undefined, 10000);
+            return response;
+        } catch (err) { logger.error(err); }
+    }
+    public async validateRestore(cfg): Promise<InterfaceServerResponse> {
+        try {
+            let response = await this.sendClientRequest('PUT', '/config/restore/validate', cfg, 10000);
+            return response;
+        } catch (err) { logger.error(err); }
+    }
+    public async restoreConfig(cfg): Promise<InterfaceServerResponse> {
+        try {
+            return await this.sendClientRequest('PUT', '/config/restore/file', cfg, 20000);
+        } catch (err) { logger.error(err); }
+    }
     private async initConnection() {
         try {
             // find HTTP server
@@ -935,16 +1252,21 @@ export class REMInterfaceServer extends ProtoServer {
                 // First, send the connection info for njsPC and see if a connection exists.
                 let url = '/config/checkconnection/';
                 // can & should extend for https/username-password/ssl
-                let data: any = { type: "njspc", isActive: true, id: null, name: "njsPC - automatic", protocol: "http:", ipAddress: webApp.ip(), port: config.getSection('web').servers.http.port || 4200, userName: "", password: "", sslKeyFile: "", sslCertFile: "" }
+                let data: any = { type: "njspc", isActive: true, id: null, name: "njsPC - automatic", protocol: "http:", ipAddress: webApp.ip(), port: config.getSection('web').servers.http.port || 4200, userName: "", password: "", sslKeyFile: "", sslCertFile: "", hostnames: [] }
+                logger.info(`Checking REM Connection ${data.name} ${data.ipAddress}:${data.port}`);
+                try {
+                    data.hostnames = await dns.promises.reverse(data.ipAddress);
+                } catch (err) { logger.error(`Error getting hostnames for njsPC REM connection`); }
                 let result = await this.putApiService(url, data, 5000);
                 // If the result code is > 200 we have an issue. (-1 is for timeout)
                 if (result.status.code > 200 || result.status.code < 0) return reject(new Error(`initConnection: ${result.error.message}`));
-                else { this.remoteConnectionId = result.obj.id };
+                else {
+                    this.remoteConnectionId = result.obj.id;
+                };
 
                 // The passed connection has been setup/verified; now test for emit
                 // if this fails, it could be because the remote connection is disabled.  We will not 
                 // automatically re-enable it
-
                 url = '/config/checkemit'
                 data = { eventName: "checkemit", property: "result", value: 'success', connectionId: result.obj.id }
                 // wait for REM server to finish resetting
@@ -957,14 +1279,14 @@ export class REMInterfaceServer extends ProtoServer {
                             // console.log(data);
                             clearTimeout(_tmr);
                             logger.info(`REM bi-directional communications established.`)
-                            return resolve();
+                            resolve();
                         });
                         result = await self.putApiService(url, data);
                         // If the result code is > 200 or -1 we have an issue.
                         if (result.status.code > 200 || result.status.code === -1) return reject(new Error(`initConnection: ${result.error.message}`));
                         else {
                             clearTimeout(_tmr);
-                            return resolve();
+                            resolve();
                         }
                     }
                     catch (err) { reject(new Error(`initConnection setTimeout: ${result.error.message}`)); }
@@ -986,7 +1308,7 @@ export class REMInterfaceServer extends ProtoServer {
     public sockClient;
     protected agent: http.Agent = new http.Agent({ keepAlive: true });
     public get isConnected() { return this.sockClient !== 'undefined' && this.sockClient.connected; };
-    private _sockets: RemoteSocket<ServerToClientEvents>[] = [];
+    private _sockets: RemoteSocket<ServerToClientEvents, any>[] = [];
     private async sendClientRequest(method: string, url: string, data?: any, timeout: number = 10000): Promise<InterfaceServerResponse> {
         try {
 
@@ -1024,7 +1346,10 @@ export class REMInterfaceServer extends ProtoServer {
                     req = http.request(opts, (response: http.IncomingMessage) => {
                         ret.status.code = response.statusCode;
                         ret.status.message = response.statusMessage;
-                        response.on('error', (err) => { ret.error = err; resolve(); });
+                        response.on('error', (err) => {
+                            logger.error(`An error occurred with request: ${err}`);
+                            ret.error = err; resolve();
+                        });
                         response.on('data', (data) => { ret.data += data; });
                         response.on('end', () => { resolve(); });
                     });
@@ -1118,6 +1443,136 @@ export class REMInterfaceServer extends ProtoServer {
             return (response.status.code === 200) ? JSON.parse(response.data) : [];
         }
         catch (err) { logger.error(err); }
+    }
+}
+export class BackupFile {
+    public static async fromBuffer(filename: string, buff: Buffer) {
+        try {
+            let bf = new BackupFile();
+            bf.filename = filename;
+            bf.filePath = path.join(process.cwd(), 'backups', bf.filename);
+            await bf.extractBackupOptions(buff);
+            return typeof bf.options !== 'undefined' ? bf : undefined;
+        } catch (err) { logger.error(`Error creating buffered backup file: ${filename}`); }
+    }
+    public static async fromFile(filePath: string) {
+        try {
+            let bf = new BackupFile();
+            bf.filePath = filePath;
+            bf.filename = path.parse(filePath).base;
+            await bf.extractBackupOptions(filePath);
+            return typeof bf.options !== 'undefined' ? bf : undefined;
+        } catch (err) { logger.error(`Error creating backup file from file ${filePath}`); }
+    }
+    public options: any;
+    public filename: string;
+    public filePath: string;
+    public errors = [];
+    protected async extractBackupOptions(file: string | Buffer) {
+        try {
+            let jszip = require("jszip");
+            let buff = Buffer.isBuffer(file) ? file : fs.readFileSync(file);
+            let zip = await jszip.loadAsync(buff);
+            await zip.file('options.json').async('string').then((data) => {
+                this.options = JSON.parse(data);
+                if (typeof this.options.backupDate === 'undefined' && typeof file === 'string') {
+                    let name = path.parse(file).name;
+                    name = name.indexOf('(') !== -1 ? name.substring(0, name.indexOf('(')) : name;
+                    if (name.length === 19) {
+                        let date = name.substring(0, 10).replace(/-/g, '/');
+                        let time = name.substring(11).replace(/-/g, ':');
+                        let dt = Date.parse(`${date} ${time}`);
+                        if (!isNaN(dt)) this.options.backupDate = Timestamp.toISOLocal(new Date(dt));
+                    }
+                }
+            });
+        } catch (err) { this.errors.push(err); logger.error(`Error extracting backup options from ${file}: ${err.message}`); }
+    }
+}
+export class RestoreFile {
+    public static async fromFile(filePath: string) {
+        try {
+            let rf = new RestoreFile();
+            rf.filePath = filePath;
+            rf.filename = path.parse(filePath).base;
+            await rf.extractRestoreOptions(filePath);
+            return rf;
+        } catch (err) { logger.error(`Error created restore file options`); }
+    }
+    public filename: string;
+    public filePath: string;
+    public njsPC: { config:any, poolConfig: any, poolState: any };
+    public servers: { name: string, uuid: string, serverConfig: any, controllerConfig: any }[] = [];
+    public options: any;
+    public errors = [];
+    protected async extractFile(zip, path): Promise<any> {
+        try {
+            let obj;
+            await zip.file(path).async('string').then((data) => { obj = JSON.parse(data); });
+            return obj;
+        } catch (err) { logger.error(`Error extracting restore data from ${this.filename}[${path}]: ${err.message}`); }
+    }
+    protected async extractRestoreOptions(file: string | Buffer) {
+        try {
+            let jszip = require("jszip");
+            let buff = Buffer.isBuffer(file) ? file : fs.readFileSync(file);
+            let zip = await jszip.loadAsync(buff);
+            this.options = await this.extractFile(zip, 'options.json');
+            // Now we need to extract all the servers from the file.
+            if (this.options.njsPC) {
+                this.njsPC = { config: {}, poolConfig: {}, poolState: {} };
+                this.njsPC.config = await this.extractFile(zip, 'njsPC/config.json');
+                this.njsPC.poolConfig = await this.extractFile(zip, 'njsPC/data/poolConfig.json');
+                this.njsPC.poolState = await this.extractFile(zip, 'njsPC/data/poolState.json');
+            }
+            for (let i = 0; i < this.options.servers.length; i++) {
+                // Extract each server from the file.
+                let srv = this.options.servers[i];
+                if (srv.backup && srv.success) {
+                    this.servers.push({
+                        name: srv.name,
+                        uuid: srv.uuid,
+                        serverConfig: await this.extractFile(zip, `${srv.name}/serverConfig.json`),
+                        controllerConfig: await this.extractFile(zip, `${srv.name}/data/controllerConfig.json`)
+                    });
+                }
+            }
+        } catch(err) { this.errors.push(err); logger.error(`Error extracting restore options from ${file}: ${err.message}`); }
+    }
+}
+export class RestoreResults {
+    public errors = [];
+    public warnings = [];
+    public success = [];
+    public modules: { name: string, errors: any[], warnings: any[], success:any[], restored: number, ignored: number }[] = [];
+    protected getModule(name: string): { name: string, errors: any[], warnings: any[], success:any[], restored: number, ignored: number } {
+        let mod = this.modules.find(elem => name === elem.name);
+        if (typeof mod === 'undefined') {
+            mod = { name: name, errors: [], warnings: [], success: [], restored: 0, ignored: 0 };
+            this.modules.push(mod);
+        }
+        return mod;
+    }
+    public addModuleError(name: string, err: any): { name: string, errors: any[], warnings: any[], success:any[], restored: number, ignored: number } {
+        let mod = this.getModule(name);
+        mod.errors.push(err);
+        mod.ignored++;
+        logger.error(`Restore ${name} -> ${err}`);
+        return mod;
+    }
+    public addModuleWarning(name: string, warn: any): { name: string, errors: any[], warnings: any[], success:any[], restored: number, ignored: number }  {
+        let mod = this.getModule(name);
+        mod.warnings.push(warn);
+        mod.restored++;
+        logger.warn(`Restore ${name} -> ${warn}`);
+        return mod;
+    }
+    public addModuleSuccess(name: string, success: any): { name: string, errors: any[], warnings: any[], success: any[], restored: number, ignored: number } {
+        let mod = this.getModule(name);
+        mod.success.push(success);
+        mod.restored++;
+        logger.info(`Restore ${name} -> ${success}`);
+        return mod;
     }
 }
 export const webApp = new WebServer();

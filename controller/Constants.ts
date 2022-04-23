@@ -266,7 +266,7 @@ export class Timestamp {
         let dateJan = new Date(this._dt.getFullYear(), 0, 1, 2);
         let dateJul = new Date(this._dt.getFullYear(), 6, 1, 2);
         obj.tzOffset = dateJan.getTimezoneOffset() / 60 * -1;
-        obj.adjustDST = dateJan.getTimezoneOffset() - dateJul.getTimezoneOffset() > 0; 
+        obj.adjustDST = dateJan.getTimezoneOffset() - dateJul.getTimezoneOffset() > 0;
         return obj;
     }
     public addHours(hours: number, minutes: number = 0, seconds: number = 0, milliseconds: number = 0) {
@@ -301,12 +301,13 @@ export enum ControllerType {
     EasyTouch = 'easytouch',
     Unknown = 'unknown',
     Virtual = 'virtual',
-    Nixie = 'nixie'
+    Nixie = 'nixie',
+    AquaLink = 'aqualink'
 }
-export enum VirtualDeviceType {
-    Pump = 'pump',
-    Chlorinator = 'chlorinator'
-}
+// export enum VirtualDeviceType {
+//     Pump = 'pump',
+//     Chlorinator = 'chlorinator'
+// }
 //export class Enums {
 //    public static Addresses = {
 //        2: { val: 2, name: 'chlorinator', desc: 'Chlorinator' },
@@ -367,6 +368,94 @@ export class Utils {
                 let fn = this.convert.temperature[from.toLowerCase()];
                 if (typeof fn !== 'undefined' && typeof fn[to.toLowerCase()] === 'function') return fn[to.toLowerCase()](val);
             }
+        },
+        pressure: {
+            bar: {
+                kpa: (val) => { return val * 100; },
+                kilopascal: (val) => { return val * 100; },
+                pa: (val) => { return val * 100000; },
+                pascal: (val) => { return val * 100000; },
+                atm: (val) => { return val * 0.986923; },
+                atmosphere: (val) => { return val * 0.986923; },
+                psi: (val) => { return val * 14.5038; },
+                bar: (val) => { return val; }
+            },
+            kpa: {
+                kpa: (val) => { return val; },
+                kilopascal: (val) => { return val; },
+                pa: (val) => { return val * 1000; },
+                pascal: (val) => { return val * 1000; },
+                atm: (val) => { return val / 101.325; },
+                atmosphere: (val) => { return val / 101.325; },
+                psi: (val) => { return val * 0.145038; },
+                bar: (val) => { return val * .01; }
+            },
+            kilopascal: {
+                kpa: (val) => { return val; },
+                kilopascal: (val) => { return val; },
+                pa: (val) => { return val * 1000; },
+                pascal: (val) => { return val * 1000; },
+                atm: (val) => { return val / 101.325; },
+                atmosphere: (val) => { return val / 101.325; },
+                psi: (val) => { return val * 0.145038; },
+                bar: (val) => { return val * .01; }
+            },
+            pa: {
+                kpa: (val) => { return val / 1000; },
+                kilopascal: (val) => { return val / 1000; },
+                pa: (val) => { return val; },
+                pascal: (val) => { return val; },
+                atm: (val) => { return val / 101325; },
+                atmosphere: (val) => { return val / 101325; },
+                psi: (val) => { return val * 0.000145038; },
+                bar: (val) => { return val / 100000; }
+            },
+            pascal: {
+                kpa: (val) => { return val / 1000; },
+                kilopascal: (val) => { return val / 1000; },
+                pa: (val) => { return val; },
+                pascal: (val) => { return val; },
+                atm: (val) => { return val / 101325; },
+                atmosphere: (val) => { return val / 101325; },
+                psi: (val) => { return val * 0.000145038; },
+                bar: (val) => { return val / 100000; }
+            },
+            atm: {
+                kpa: (val) => { return val * 101.325; },
+                kilopascal: (val) => { return val * 101.325; },
+                pa: (val) => { return val * 101325; },
+                pascal: (val) => { return val * 101325; },
+                atm: (val) => { return val; },
+                atmosphere: (val) => { return val; },
+                psi: (val) => { return val * 14.6959; },
+                bar: (val) => { return val * 1.01325; }
+            },
+            atmosphere: {
+                kpa: (val) => { return val * 101.325; },
+                kilopascal: (val) => { return val * 101.325; },
+                pa: (val) => { return val * 101325; },
+                pascal: (val) => { return val * 101325; },
+                atm: (val) => { return val; },
+                atmosphere: (val) => { return val; },
+                psi: (val) => { return val * 14.6959; },
+                bar: (val) => { return val * 1.01325; }
+            },
+            psi: {
+                kpa: (val) => { return val * 6.89476; },
+                kilopascal: (val) => { return val * 6.89476; },
+                pa: (val) => { return val * 6894.76; },
+                pascal: (val) => { return val * 6894.76; },
+                atm: (val) => { return val * 0.068046; },
+                atmosphere: (val) => { return 0.068046; },
+                psi: (val) => { return val; },
+                bar: (val) => { return val * 0.0689476; }
+            },
+            convertUnits: (val: number, from: string, to: string) => {
+                if (typeof val !== 'number') return null;
+                let fn = this.convert.pressure[from.toLowerCase()];
+                if (typeof fn !== 'undefined' && typeof fn[to.toLowerCase()] === 'function') return fn[to.toLowerCase()](val);
+            }
+
         },
         volume: {
             gal: {
@@ -445,7 +534,7 @@ export class Utils {
         var fmt = '';
         let hrs = Math.floor(seconds / 3600);
         let min = Math.floor((seconds - (hrs * 3600)) / 60);
-        let sec = seconds - ((hrs * 3600) + (min * 60));
+        let sec = Math.round(seconds) - ((hrs * 3600) + (min * 60));
         if (hrs > 1) fmt += (hrs.toString() + 'hrs');
         else if (hrs > 0) fmt += (hrs.toString() + 'hr');
 
@@ -480,7 +569,7 @@ export class Utils {
         }
         return seconds;
     }
-    public isNullOrEmpty(val: any) {  return (typeof val === 'string') ? val === null || val === '' : typeof val === 'undefined' || val === null; }
+    public isNullOrEmpty(val: any) { return (typeof val === 'string') ? val === null || val === '' : typeof val === 'undefined' || val === null; }
     public sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
     // Use this method to get around the circular references for the toJSON function.
     public serialize(obj, fn?: (key, value) => any): string {
@@ -514,6 +603,73 @@ export class Utils {
                 o[prop] = v;
         }
         return o;
+    }
+    public findLineByLeastSquares(values_x: number[], values_y: number[]): number[][] {
+        var x_sum = 0;
+        var y_sum = 0;
+        var xy_sum = 0;
+        var xx_sum = 0;
+        var count = 0;
+
+        /*
+         * The above is just for quick access, makes the program faster
+         */
+        var x = 0;
+        var y = 0;
+        var values_length = values_x.length;
+
+        if (values_length != values_y.length) {
+            throw new Error('The parameters values_x and values_y need to have same size!');
+        }
+
+        /*
+         * Above and below cover edge cases
+         */
+        if (values_length === 0) {
+            return [[], []];
+        }
+
+        /*
+         * Calculate the sum for each of the parts necessary.
+         */
+        for (let i = 0; i < values_length; i++) {
+            x = values_x[i];
+            y = values_y[i];
+            x_sum += x;
+            y_sum += y;
+            xx_sum += x * x;
+            xy_sum += x * y;
+            count++;
+        }
+
+        /*
+         * Calculate m and b for the line equation:
+         * y = x * m + b
+         */
+        var m = (count * xy_sum - x_sum * y_sum) / (count * xx_sum - x_sum * x_sum);
+        var b = (y_sum / count) - (m * x_sum) / count;
+
+        /*
+         * We then return the x and y data points according to our fit
+         */
+        var result_values_x: number[] = [];
+        var result_values_y: number[] = [];
+
+        for (let i = 0; i < values_length; i++) {
+            x = values_x[i];
+            y = x * m + b;
+            result_values_x.push(x);
+            result_values_y.push(y);
+        }
+
+        return [result_values_x, result_values_y];
+    }
+    public slopeOfLeastSquares(values_x: number[], values_y: number[]): number {
+        let points = utils.findLineByLeastSquares(values_x, values_y);
+        let points_x = points[0];
+        let points_y = points[1];
+        let slope = (points_y[0] - points_y[points_y.length - 1]) / (points_x[0] - points_x[points_x.length - 1]);
+        return slope;
     }
 }
 

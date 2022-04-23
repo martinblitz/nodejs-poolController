@@ -37,6 +37,26 @@
               "name": "solarTemp",
               "value": "@bind=data.solar;",
               "type": "int"
+            },
+            {
+              "name": "waterSensor1",
+              "value": "@bind=data.waterSensor1;",
+              "type": "float"
+            },
+            {
+              "name": "waterSensor2",
+              "value": "@bind=data.waterSensor2;",
+              "type": "float"
+            },
+            {
+              "name": "waterSensor3",
+              "value": "@bind=data.waterSensor3;",
+              "type": "float"
+            },
+            {
+              "name": "waterSensor4",
+              "value": "@bind=data.waterSensor4;",
+              "type": "float"
             }
           ]
         }
@@ -83,7 +103,9 @@
         {
           "measurement": "chemicalDose",
           "description": "Active doses recorded by chemical dosed",
-          "series": { "value": "@bind=data.start;" },
+          "series": {
+            "value": "@bind=data.start;"
+          },
           "tags": [
             {
               "name": "chemical",
@@ -95,7 +117,6 @@
               "name": "volumeDosed",
               "value": "@bind=data.volumeDosed;",
               "type": "float"
-
             },
             {
               "name": "timeDosed",
@@ -125,7 +146,7 @@
             {
               "name": "status",
               "value": "@bind=data.status;",
-              "type":  "string"
+              "type": "string"
             },
             {
               "name": "end",
@@ -186,7 +207,7 @@
             },
             {
               "name": "pump is dosing",
-              "value": "@bind=data.ph.pump.isDosing?1:0;",
+              "value": "@bind=typeof data.ph.pump.isDosing !== 'undefined'?data.ph.pump.isDosing?1:0:0;",
               "type": "int"
             },
             {
@@ -275,6 +296,16 @@
               "type": "int"
             },
             {
+              "name": "high threshold",
+              "value": "@bind=vars.cfg.ph.tolerance.high;",
+              "type": "float"
+            },
+            {
+              "name": "low threshold",
+              "value": "@bind=vars.cfg.ph.tolerance.low;",
+              "type": "float"
+            },
+            {
               "name": "tolerance enabled int",
               "value": "@bind=vars.cfg.ph.tolerance.enabled?1:0;",
               "type": "int"
@@ -350,7 +381,7 @@
             },
             {
               "name": "pump is dosing",
-              "value": "@bind=data.orp.pump.isDosing?1:0;",
+              "value": "@bind=typeof data.orp.pump.isDosing !== 'undefined'?data.orp.pump.isDosing?1:0:0;",
               "type": "int"
             },
             {
@@ -382,6 +413,16 @@
               "name": "dose volume remaining",
               "value": "@bind=data.orp.dosingVolumeRemaining;",
               "type": "int"
+            },
+            {
+              "name": "dose volume float",
+              "value": "@bind=data.orp.doseVolume;",
+              "type": "float"
+            },
+            {
+              "name": "dose volume remaining float",
+              "value": "@bind=data.orp.dosingVolumeRemaining;",
+              "type": "float"
             },
             {
               "name": "tank level",
@@ -417,6 +458,11 @@
               "name": "max dosing volume",
               "value": "@bind=vars.cfg.orp.maxDosingVolume;",
               "type": "int"
+            },
+            {
+              "name": "max dosing volume float",
+              "value": "@bind=vars.cfg.orp.maxDosingVolume;",
+              "type": "float"
             },
             {
               "name": "mixing time",
@@ -466,6 +512,26 @@
             {
               "name": "volume dosed",
               "value": "@bind=data.ph.volumeDosed;",
+              "type": "int"
+            },
+            {
+              "name": "max daily volume float",
+              "value": "@bind=data.orp.maxDailyVolume;",
+              "type": "float"
+            },
+            {
+              "name": "daily volume dosed float",
+              "value": "@bind=data.ph.dailyVolumeDosed;",
+              "type": "float"
+            },
+            {
+              "name": "volume dosed float",
+              "value": "@bind=data.ph.volumeDosed;",
+              "type": "float"
+            },
+            {
+              "name": "orp demand",
+              "value": "@bind=data.orp.demand;",
               "type": "int"
             }
           ]
@@ -578,6 +644,11 @@
               "type": "int"
             },
             {
+              "name": "warning: pH daily limit reached",
+              "value": "@bind=data.warnings.pHDailyLimitReached.val;",
+              "type": "int"
+            },
+            {
               "name": "warning: water chemistry",
               "value": "@bind=data.warnings.waterChemistry.val;",
               "type": "int"
@@ -601,8 +672,6 @@
         }
       ]
     },
-
-
     {
       "name": "circuit",
       "description": "Bind circuit emit",
@@ -785,7 +854,7 @@
     },
     {
       "name": "pump",
-      "description": "Bind circuit emit",
+      "description": "Pump state emit",
       "points": [
         {
           "measurement": "pumps",
@@ -816,6 +885,11 @@
             {
               "name": "gpm",
               "value": "@bind=data.gpm;",
+              "type": "int"
+            },
+            {
+              "name": "flow",
+              "value": "@bind=data.flow;",
               "type": "int"
             },
             {
@@ -875,6 +949,11 @@
               "name": "spaSetpoint",
               "value": "@bind=data.spaSetpoint;",
               "type": "int"
+            },
+            {
+              "name": "target output",
+              "value": "@bind=data.targetOutput;",
+              "type": "int"
             }
           ]
         }
@@ -884,6 +963,90 @@
       "name": "config",
       "description": "Not used for updates",
       "enabled": false
+    },
+    {
+      "name": "filter",
+      "description": "Bind filter to measurements",
+      "points": [
+        {
+          "measurement": "filter",
+          "tags": [
+            {
+              "name": "units",
+              "value": "@bind=data.pressureUnits.desc;"
+            },
+            {
+              "name": "filterType",
+              "value": "@bind=data.filterType.desc;"
+            },
+            {
+              "name": "body",
+              "value": "@bind=data.body.desc;"
+            },
+            {
+              "name": "name",
+              "value": "@bind=data.name;"
+            },
+            {
+              "name": "id",
+              "value": "@bind=data.id;"
+            }
+          ],
+          "fields": [
+            {
+              "name": "isOn",
+              "value": "@bind=data.isOn;",
+              "type": "boolean"
+            },
+            {
+              "name": "isOnVal",
+              "value": "@bind=data.isOn?1:0;",
+              "type": "integer"
+            },
+            {
+              "name": "pressure",
+              "value": "@bind=data.pressure;",
+              "type": "float"
+            },
+            {
+              "name": "referencePressure",
+              "value": "@bind=data.refPressure;",
+              "type": "float"
+            },
+            {
+              "name": "cleanPercentage",
+              "value": "@bind=data.cleanPercentage;",
+              "type": "float"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "cover",
+      "description": "Bind cover to measurements",
+      "points": [
+        {
+          "measurement": "cover",
+          "tags": [
+            {
+              "name": "name",
+              "value": "@bind=data.name;"
+            },
+            {
+              "name": "id",
+              "value": "@bind=data.id;"
+            }
+          ],
+          "fields": [
+            {
+              "name": "isClosed",
+              "value": "@bind=data.isClosed;",
+              "type": "boolean"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -74,6 +74,7 @@ export class StateSocket {
             }
             catch (err) { logger.error(err); }
         });
+        
         sock.on('/chlorinator', async (data: any) => {
             try {
                 data = JSON.parse(data);
@@ -98,6 +99,22 @@ export class StateSocket {
                 }
             }
             catch (err) { logger.error(err); }
+        });
+        sock.on('/filter', async (data: any) => {
+            try {
+                data = JSON.parse(data);
+                let id = parseInt(data.id, 10);
+                let filter = sys.filters.find(elem => elem.id === id);
+                if (typeof filter !== 'undefined' && filter.isActive && !isNaN(filter.id)) {
+                    let sfilter = state.filters.getItemById(filter.id, filter.isActive)
+                    let pu = sys.board.valueMaps.pressureUnits.transform(filter.pressureUnits);
+                    if (typeof data.pressure !== 'undefined')
+                        await sys.board.filters.setFilterPressure(filter.id, data.pressure, data.pressureUnits || pu.name);
+                    sfilter.emitEquipmentChange();
+                }
+
+                
+            } catch (err) { logger.error(err); }
         });
         sock.on('/chemController', async (data: any) => {
             try {
@@ -144,7 +161,7 @@ export class StateSocket {
                         if (typeof data.orpTank.units === 'string') scontroller.orp.tank.units = controller.orp.tank.units = data.orpTank.units;
                     }
 
-                    // Need to build this out to include the type of controller.  If this is Homegrown or REM Chem we
+                    // Need to build this out to include the type of controller.  If this is REM Chem we
                     // will send the whole rest of the nut over to it.  Intellichem will only let us
                     // set specific values.
                     if (controller.type === 3) {
@@ -157,7 +174,7 @@ export class StateSocket {
         sock.on('/circuit', async (data: any) => {
             try {
                 data = JSON.parse(data);
-                let id = data.parseInt(data.id, 10);
+                let id = parseInt(data.id, 10);
                 if (!isNaN(id) && (typeof data.isOn !== 'undefined' || typeof data.state !== 'undefined')) {
                     await sys.board.circuits.setCircuitStateAsync(id, utils.makeBool(data.isOn || typeof data.state));
                 }
@@ -167,7 +184,7 @@ export class StateSocket {
         sock.on('/feature', async (data: any) => {
             try {
                 data = JSON.parse(data);
-                let id = data.parseInt(data.id, 10);
+                let id = parseInt(data.id, 10);
                 if (!isNaN(id) && (typeof data.isOn !== 'undefined' || typeof data.state !== 'undefined')) {
                     await sys.board.features.setFeatureStateAsync(id, utils.makeBool(data.isOn || typeof data.state));
                 }
@@ -177,7 +194,7 @@ export class StateSocket {
         sock.on('/circuitGroup', async (data: any) => {
             try {
                 data = JSON.parse(data);
-                let id = data.parseInt(data.id, 10);
+                let id = parseInt(data.id, 10);
                 if (!isNaN(id) && (typeof data.isOn !== 'undefined' || typeof data.state !== 'undefined')) {
                     await sys.board.circuits.setCircuitGroupStateAsync(id, utils.makeBool(data.isOn || typeof data.state));
                 }
@@ -187,7 +204,7 @@ export class StateSocket {
         sock.on('/lightGroup', async (data: any) => {
             try {
                 data = JSON.parse(data);
-                let id = data.parseInt(data.id, 10);
+                let id = parseInt(data.id, 10);
                 if (!isNaN(id) && (typeof data.isOn !== 'undefined' || typeof data.state !== 'undefined')) {
                     await sys.board.circuits.setLightGroupStateAsync(id, utils.makeBool(data.isOn || typeof data.state));
                 }

@@ -15,15 +15,15 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import * as extend from 'extend';
-import { SystemBoard, byteValueMap, ConfigQueue, ConfigRequest, BodyCommands, PumpCommands, HeaterCommands, SystemCommands, CircuitCommands, FeatureCommands, ChlorinatorCommands, EquipmentIdRange, ScheduleCommands, ChemControllerCommands } from './SystemBoard';
-import { PoolSystem, Body, Pump, sys, ConfigVersion, Heater, Schedule, EggTimer, ICircuit, CustomNameCollection, CustomName, LightGroup, LightGroupCircuit, Feature, ChemController, Circuit, ScheduleCollection } from '../Equipment';
-import { Protocol, Outbound, Message, Response } from '../comms/messages/Messages';
-import { state, ChlorinatorState, CommsState, State, ICircuitState, ICircuitGroupState, LightGroupState, BodyTempState, FilterState, ScheduleState } from '../State';
 import { logger } from '../../logger/Logger';
 import { conn } from '../comms/Comms';
-import { MessageError, InvalidEquipmentIdError, InvalidEquipmentDataError, InvalidOperationError } from '../Errors';
+import { Message, Outbound, Protocol, Response } from '../comms/messages/Messages';
 import { utils } from '../Constants';
+import { Body, ChemController, ConfigVersion, CustomName, EggTimer, Feature, Heater, ICircuit, LightGroup, LightGroupCircuit, Options, PoolSystem, Pump, Schedule, sys } from '../Equipment';
+import { EquipmentTimeoutError, InvalidEquipmentDataError, InvalidEquipmentIdError, InvalidOperationError } from '../Errors';
 import { ncp } from "../nixie/Nixie";
+import { BodyTempState, ChlorinatorState, ICircuitGroupState, ICircuitState, LightGroupState, state } from '../State';
+import { BodyCommands, byteValueMap, ChemControllerCommands, ChlorinatorCommands, CircuitCommands, ConfigQueue, ConfigRequest, EquipmentIdRange, FeatureCommands, HeaterCommands, PumpCommands, ScheduleCommands, SystemBoard, SystemCommands } from './SystemBoard';
 
 export class EasyTouchBoard extends SystemBoard {
     public needsConfigChanges: boolean = false;
@@ -44,7 +44,9 @@ export class EasyTouchBoard extends SystemBoard {
             [0, { name: 'off', desc: 'Off' }],
             [1, { name: 'heater', desc: 'Heater' }],
             [2, { name: 'cooling', desc: 'Cooling' }],
-            [3, { name: 'solar', desc: 'Solar' }]
+            [3, { name: 'solar', desc: 'Solar' }],
+            [4, { name: 'hpheat', desc: 'Heatpump' }],
+            [5, { name: 'dual', desc: 'Dual'}]
         ]);
         this.valueMaps.customNames = new byteValueMap(
             sys.customNames.get().map((el, idx) => {
@@ -160,22 +162,25 @@ export class EasyTouchBoard extends SystemBoard {
             [101, { name: 'feature8', desc: 'Feature 8' }]
         ]);
         // We need this because there is a no-pump thing in *Touch.
-        // RKS: 05-04-21 The no-pump item was removed as this was only required for -webClient.  deletePumpAsync should remove the pump from operation.
+        // RKS: 05-04-21 The no-pump item was removed as this was only required for -webClient.  deletePumpAsync should remove the pump from operation.  Do not use 255 as EasyTouch reports
+        // 255 or 0 for pumps that are not installed.
         this.valueMaps.pumpTypes = new byteValueMap([
-            [1, { name: 'vf', desc: 'Intelliflo VF', minFlow: 15, maxFlow: 130, flowStepSize: 1, maxCircuits: 8, hasAddress: true }],
+            [1, { name: 'vf', desc: 'Intelliflo VF', maxPrimingTime: 6, minFlow: 15, maxFlow: 130, flowStepSize: 1, maxCircuits: 8, hasAddress: true }],
             [64, { name: 'vsf', desc: 'Intelliflo VSF', minSpeed: 450, maxSpeed: 3450, speedStepSize: 10, minFlow: 15, maxFlow: 130, flowStepSize: 1, maxCircuits: 8, hasAddress: true }],
             [65, { name: 'ds', desc: 'Two-Speed', maxCircuits: 40, hasAddress: false, hasBody: true }],
-            [128, { name: 'vs', desc: 'Intelliflo VS', maxPrimingTime: 6, minSpeed: 450, maxSpeed: 3450, speedStepSize: 10, maxCircuits: 8, hasAddress: true }],
+            [128, { name: 'vs', desc: 'Intelliflo VS', maxPrimingTime: 10, minSpeed: 450, maxSpeed: 3450, speedStepSize: 10, maxCircuits: 8, hasAddress: true }],
             [169, { name: 'vssvrs', desc: 'IntelliFlo VS+SVRS', maxPrimingTime: 6, minSpeed: 450, maxSpeed: 3450, speedStepSize: 10, maxCircuits: 8, hasAddress: true }],
-            [257, { name: 'ss', desc: 'Single Speed', maxCircuits: 0, hasAddress: false, hasBody: true, equipmentMaster: 1 }],
-            [256, { name: 'sf', desc: 'SuperFlo VS', hasAddress: false, maxCircuits: 8, maxRelays: 4, equipmentMaster: 1 }]
+            [257, { name: 'ss', desc: 'Single Speed', maxCircuits: 0, hasAddress: false, hasBody: true, equipmentMaster: 1, maxRelays: 1, relays: [{ id: 1, name: 'Pump On/Off' }] }],
+            [256, { name: 'sf', desc: 'SuperFlo VS', hasAddress: false, maxCircuits: 8, maxRelays: 4, equipmentMaster: 1, maxSpeeds: 4, relays: [{ id: 1, name: 'Program #1' }, { id: 2, name: 'Program #2' }, { id: 3, name: 'Program #3' }, { id: 4, name: 'Program #4' }] }],
+            [258, { name: 'hwrly', desc: 'Hayward Relay VS', hasAddress: false, maxCircuits: 8, maxRelays: 4, equipmentMaster: 1, maxSpeeds: 8, relays: [{ id: 1, name: 'Step #1' }, { id: 2, name: 'Step #2' }, { id: 3, name: 'Step #3' }, { id: 4, name: 'Pump On' }] }],
+            [259, { name: 'hwvs', desc: 'Hayward Eco/TriStar VS', minSpeed: 450, maxSpeed: 3450, maxCircuits: 8, hasAddress: true, equipmentMaster: 1 }]
         ]);
         this.valueMaps.heaterTypes = new byteValueMap([
             [0, { name: 'none', desc: 'No Heater', hasAddress: false }],
             [1, { name: 'gas', desc: 'Gas Heater', hasAddress: false }],
-            [2, { name: 'solar', desc: 'Solar Heater', hasAddress: false }],
-            [3, { name: 'heatpump', desc: 'Heat Pump', hasAddress: true }],
-            [4, { name: 'ultratemp', desc: 'UltraTemp', hasAddress: true, hasCoolSetpoint: true }],
+            [2, { name: 'solar', desc: 'Solar Heater', hasAddress: false, hasPreference: true }],
+            [3, { name: 'heatpump', desc: 'Heat Pump', hasAddress: true, hasPreference: true }],
+            [4, { name: 'ultratemp', desc: 'UltraTemp', hasAddress: true, hasCoolSetpoint: true, hasPreference: true }],
             [5, { name: 'hybrid', desc: 'Hybrid', hasAddress: true }],
             [6, { name: 'maxetherm', desc: 'Max-E-Therm', hasAddress: true }],
             [7, { name: 'mastertemp', desc: 'MasterTemp', hasAddress: true }]
@@ -296,6 +301,14 @@ export class EasyTouchBoard extends SystemBoard {
             }
             return { val: b, days: days };
         };
+        this.valueMaps.lightCommands = new byteValueMap([
+            [128, { name: 'colorsync', desc: 'Sync', types: ['intellibrite'] }],
+            [144, { name: 'colorset', desc: 'Set', types: ['intellibrite'] }],
+            [160, { name: 'colorswim', desc: 'Swim', types: ['intellibrite'] }],
+            [190, { name: 'colorhold', desc: 'Hold', types: ['intellibrite'], sequence: 13 }],
+            [191, { name: 'colorrecall', desc: 'Recall', types: ['intellibrite'], sequence: 14 }],
+            [208, { name: 'thumper', desc: 'Thumper', types: ['magicstream'] }]
+        ]);
         this.valueMaps.lightThemes.transform = function (byte) { return extend(true, { val: byte }, this.get(byte) || this.get(255)); };
         this.valueMaps.circuitNames.transform = function (byte) {
             if (byte < 200) {
@@ -306,6 +319,14 @@ export class EasyTouchBoard extends SystemBoard {
                 return extend(true, {}, { val: byte, desc: customName.name, name: customName.name });
             }
         };
+        this.valueMaps.panelModes = new byteValueMap([
+            [0, { val: 0, name: 'auto', desc: 'Auto' }],
+            [1, { val: 1, name: 'service', desc: 'Service' }],
+            [8, { val: 8, name: 'freeze', desc: 'Freeze' }],
+            [128, { val: 128, name: 'timeout', desc: 'Timeout' }],
+            [129, { val: 129, name: 'service-timeout', desc: 'Service/Timeout' }],
+            [255, { name: 'error', desc: 'System Error' }]
+        ]);
         this.valueMaps.expansionBoards = new byteValueMap([
             [0, { name: 'ET28', part: 'ET2-8', desc: 'EasyTouch2 8', circuits: 8, shared: true }],
             [1, { name: 'ET28P', part: 'ET2-8P', desc: 'EasyTouch2 8P', circuits: 8, shared: false }],
@@ -321,15 +342,18 @@ export class EasyTouchBoard extends SystemBoard {
         ]);
     }
     public initHeaterDefaults() {
-        let heater = sys.heaters.getItemById(1, true);
-        heater.isActive = true;
-        heater.type = 1;
-        heater.name = "Gas Heater";
-        let sheater = state.heaters.getItemById(1, true);
-        sheater.type = heater.type;
-        sheater.name = heater.name;
-        //sheater.isVirtual = heater.isVirtual = false;
-        sys.equipment.shared ? heater.body = 32 : heater.body = 0;
+        sys.board.heaters.updateHeaterServices();
+        // RKS: 03-03-22 This is not correct.  As it turns out there is a case where the only heater installed is not
+        // a gas heater.  This also does not work for dual body systems.
+        //let heater = sys.heaters.getItemById(1, true);
+        //heater.isActive = true;
+        //heater.type = 1;
+        //heater.name = "Gas Heater";
+        //let sheater = state.heaters.getItemById(1, true);
+        //sheater.type = heater.type;
+        //sheater.name = heater.name;
+        ////sheater.isVirtual = heater.isVirtual = false;
+        //sys.equipment.shared ? heater.body = 32 : heater.body = 0;
     }
     public initBodyDefaults() {
         // Initialize the bodies.  We will need these very soon.
@@ -337,15 +361,21 @@ export class EasyTouchBoard extends SystemBoard {
             // Add in the bodies for the configuration.  These need to be set.
             let cbody = sys.bodies.getItemById(i, true);
             let tbody = state.temps.bodies.getItemById(i, true);
-            // If the body doesn't represent a spa then we set the type.
-            tbody.type = cbody.type = i > 1 && !sys.equipment.shared ? 1 : 0;
             cbody.isActive = true;
+            // If the body doesn't represent a spa then we set the type.
+            // RSG - 10-5-21: If a single body IT (i5+3s/i9+3s) the bodies are the same; set to pool
+            // RKS: 04-13-22 - This is not really correct.  IntelliTouch (S) models are actually shared body systems that do
+            // not have intake/return valves but there are two bodies that are named Hi-Temp (spa) and Lo-Temp (pool).  This
+            // is very confusing in the control panels but I see why it is done this way.  If they didn't they would need
+            // different controllers for the Indoor and Wireless controllers since the top 2 horizontal buttons are body controls.
+            //tbody.type = cbody.type = i > 1 && !sys.equipment.shared && sys.equipment.intakeReturnValves ? 1 : 0;
+            tbody.type = cbody.type = i - 1;  // This will set the first body to pool/Lo-Temp and the second body to spa/Hi-Temp.
             if (typeof cbody.name === 'undefined') {
                 let bt = sys.board.valueMaps.bodyTypes.transform(cbody.type);
-                tbody.name = cbody.name = bt.name;
+                tbody.name = cbody.name = bt.desc;
             }
         }
-        if (!sys.equipment.shared && !sys.equipment.dual) {
+        if (!sys.equipment.shared && !sys.equipment.dual && state.equipment.controllerType !== 'intellitouch') {
             sys.bodies.removeItemById(2);
             state.temps.bodies.removeItemById(2);
         }
@@ -374,7 +404,7 @@ export class EasyTouchBoard extends SystemBoard {
         let md = mod.get();
         eq.maxBodies = md.bodies = typeof mt.bodies !== 'undefined' ? mt.bodies : mt.shared ? 2 : 1;
         eq.maxCircuits = md.circuits = typeof mt.circuits !== 'undefined' ? mt.circuits : 8;
-        eq.maxFeatures = md.features = typeof mt.features !== 'undefined' ? mt.features : 10
+        eq.maxFeatures = md.features = typeof mt.features !== 'undefined' ? mt.features : 8;
         eq.maxValves = md.valves = typeof mt.valves !== 'undefined' ? mt.valves : mt.shared ? 4 : 2;
         eq.maxPumps = md.maxPumps = typeof mt.pumps !== 'undefined' ? mt.pumps : 2;
         eq.shared = mt.shared;
@@ -382,6 +412,7 @@ export class EasyTouchBoard extends SystemBoard {
         eq.maxChlorinators = md.chlorinators = 1;
         eq.maxChemControllers = md.chemControllers = 1;
         eq.maxCustomNames = 10;
+        eq.intakeReturnValves = md.intakeReturnValves = typeof mt.intakeReturnValves !== 'undefined' ? mt.intakeReturnValves : false;
         // Calculate out the invalid ids.
         sys.board.equipmentIds.invalidIds.set([]);
         if (!eq.shared) sys.board.equipmentIds.invalidIds.merge([1]);
@@ -410,6 +441,17 @@ export class EasyTouchBoard extends SystemBoard {
             let b = sys.bodies.getItemByIndex(i);
             b.master = 0;
         }
+        state.equipment.maxBodies = sys.equipment.maxBodies;
+        state.equipment.maxCircuitGroups = sys.equipment.maxCircuitGroups;
+        state.equipment.maxCircuits = sys.equipment.maxCircuits;
+        state.equipment.maxFeatures = sys.equipment.maxFeatures;
+        state.equipment.maxHeaters = sys.equipment.maxHeaters;
+        state.equipment.maxLightGroups = sys.equipment.maxLightGroups;
+        state.equipment.maxPumps = sys.equipment.maxPumps;
+        state.equipment.maxSchedules = sys.equipment.maxSchedules;
+        state.equipment.maxValves = sys.equipment.maxValves;
+        state.equipment.shared = sys.equipment.shared;
+        state.equipment.dual = sys.equipment.dual;
         state.emitControllerChange();
     }
     public bodies: TouchBodyCommands = new TouchBodyCommands(this);
@@ -454,8 +496,8 @@ export class TouchConfigRequest extends ConfigRequest {
         if (typeof items !== 'undefined') this.items.push(...items);
         this.oncomplete = oncomplete;
     }
-    public category: TouchConfigCategories;
-    public setcategory: GetTouchConfigCategories;
+    declare category: TouchConfigCategories;
+    declare setcategory: GetTouchConfigCategories;
 }
 export class TouchConfigQueue extends ConfigQueue {
     //protected _configQueueTimer: NodeJS.Timeout;
@@ -1044,8 +1086,69 @@ class TouchSystemCommands extends SystemCommands {
             conn.queueSendMessage(out);
         });
     }
+    public async setOptionsAsync(obj: any): Promise<Options> {
+        // Proxy for setBodyAsync.  See below for explanation.
+        await sys.board.bodies.setBodyAsync(obj);
+        if (typeof obj.clockSource !== 'undefined') {
+            sys.general.options.clockSource = obj.clockSource;
+            if (sys.general.options.clockSource === 'server') sys.board.system.setTZ();
+        }
+
+        return sys.general.options;
+    }
 }
 class TouchBodyCommands extends BodyCommands {
+    public async setBodyAsync(obj: any): Promise<Body> {
+        // The 168 is a funky packet in *Touch because it can set:
+        // * Intellichem Installed (byte 3, bit 1)
+        // * Manual spa heat (byte 4, bit 1) which only applies to the spa but is a 
+        //    general option
+        // * Manual Priority (byte 5, bit 1 - Intellitouch only)
+        // and this function can be called by either setIntelliChem (protected)
+        // or directly from setBodyAsync (/config/body endpoint) or from setGeneralAsync (/config/options)
+        // for Manual Priority.
+        // We also need to return the proper body setting manual heat, but it is irrelevant
+        // for when we are returning to chemController
+        try {
+            return new Promise<Body>((resolve, reject) => {
+                let manualHeat = sys.general.options.manualHeat;
+                let manualPriority = sys.general.options.manualPriority;
+                if (typeof obj.manualHeat !== 'undefined') manualHeat = utils.makeBool(obj.manualHeat);
+                if (typeof obj.manualPriority !== 'undefined') manualPriority = utils.makeBool(obj.manualPriority);
+                let body = sys.bodies.getItemById(obj.id, false);
+                let intellichemInstalled = sys.chemControllers.getItemByAddress(144, false).isActive;
+                let out = Outbound.create({
+                    dest: 16,
+                    action: 168,
+                    retries: 3,
+                    response: true,
+                    onComplete: (err, msg) => {
+                        if (err) reject(err);
+                        else {
+                            sys.general.options.manualHeat = manualHeat;
+                            sys.general.options.manualPriority = manualPriority;
+                            let sbody = state.temps.bodies.getItemById(body.id, true);
+                            if (body.type === 1){ // spa
+                                body.manualHeat = manualHeat;
+                            };
+                            if (typeof obj.name !== 'undefined') body.name = sbody.name = obj.name;
+                            if (typeof obj.capacity !== 'undefined') body.capacity = parseInt(obj.capacity, 10);
+                            if (typeof obj.showInDashboard !== 'undefined') body.showInDashboard = sbody.showInDashboard = utils.makeBool(obj.showInDashboard);
+                            state.emitEquipmentChanges();
+                            resolve(body);
+                        }
+                    }
+                });
+                out.insertPayloadBytes(0, 0, 9);
+                out.setPayloadByte(3, intellichemInstalled ? 255 : 254);
+                out.setPayloadByte(4, manualHeat ? 1 : 0);
+                out.setPayloadByte(5, manualPriority ? 1 : 0);
+                conn.queueSendMessage(out);
+            });
+
+        }
+        catch (err) { return Promise.reject(err); }
+    }
     public async setHeatModeAsync(body: Body, mode: number): Promise<BodyTempState> {
         return new Promise<BodyTempState>((resolve, reject) => {
             //  [16,34,136,4],[POOL HEAT Temp,SPA HEAT Temp,Heat Mode,0,2,56]
@@ -1055,6 +1158,15 @@ class TouchBodyCommands extends BodyCommands {
             // 1    | 97  | Spa setpoint
             // 2    | 7   | Pool/spa heat modes (01 = Heater spa 11 = Solar Only pool)
             // 3    | 0   | Cool set point for ultratemp
+            
+
+            // Heat modes
+            // 0 = Off
+            // 1 = Heater
+            // 2 = Solar/Heatpump Pref
+            // 3 = Solar
+            // 
+
             const body1 = sys.bodies.getItemById(1);
             const body2 = sys.bodies.getItemById(2);
             const temp1 = body1.setPoint || 100;
@@ -1243,18 +1355,20 @@ class TouchBodyCommands extends BodyCommands {
     }
 }
 export class TouchCircuitCommands extends CircuitCommands {
-    public getLightThemes(type?: number): any[] {
-        let themes = sys.board.valueMaps.lightThemes.toArray();
-        if (typeof type === 'undefined') return themes;
-        switch (type) {
-            case 8: // Magicstream
-                return themes.filter(theme => theme.type === 'magicstream');
-            case 16: // Intellibrite
-                return themes.filter(theme => theme.type === 'intellibrite');
-            default:
-                return [];
-        }
-    }
+    // RKS: 12-01-2021 This has been deprecated we are now driving this through metadata on the valuemaps.  This allows
+    // for multiple types of standardized on/off sequences with nixie controllers.
+    //public getLightThemes(type?: number): any[] {
+    //    let themes = sys.board.valueMaps.lightThemes.toArray();
+    //    if (typeof type === 'undefined') return themes;
+    //    switch (type) {
+    //        case 8: // Magicstream
+    //            return themes.filter(theme => theme.types.includes('magicstream'));
+    //        case 16: // Intellibrite
+    //            return themes.filter(theme => theme.types.includes('intellibrite'));
+    //        default:
+    //            return [];
+    //    }
+    //}
     public async setCircuitAsync(data: any): Promise<ICircuit> {
         try {
             // example [255,0,255][165,33,16,34,139,5][17,14,209,0,0][2,120]
@@ -1262,6 +1376,7 @@ export class TouchCircuitCommands extends CircuitCommands {
             // response: [255,0,255][165,33,34,16,1,1][139][1,133]
             let id = parseInt(data.id, 10);
             if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError('Circuit Id is invalid', data.id, 'Feature'));
+            if (id >= 255 || data.master === 1) return super.setCircuitAsync(data);
             let circuit = sys.circuits.getInterfaceById(id);
             // Alright check to see if we are adding a nixie circuit.
             if (id === -1 || circuit.master !== 0) {
@@ -1291,6 +1406,8 @@ export class TouchCircuitCommands extends CircuitCommands {
                             circuit.type = cstate.type = typeByte;
                             circuit.eggTimer = typeof data.eggTimer !== 'undefined' ? parseInt(data.eggTimer, 10) : circuit.eggTimer || 720;
                             circuit.dontStop = (typeof data.dontStop !== 'undefined') ? utils.makeBool(data.dontStop) : circuit.eggTimer === 1620;
+                            cstate.isActive = circuit.isActive = true;
+                            circuit.master = 0;
                             let eggTimer = sys.eggTimers.find(elem => elem.circuit === parseInt(data.id, 10));
                             try {
                                 if (circuit.eggTimer === 720) {
@@ -1323,7 +1440,7 @@ export class TouchCircuitCommands extends CircuitCommands {
         data.functionId = sys.board.valueMaps.circuitFunctions.getValue('notused');
         return this.setCircuitAsync(data);
     }
-    public async setCircuitStateAsync(id: number, val: boolean): Promise<ICircuitState> {
+    public async setCircuitStateAsync(id: number, val: boolean, ignoreDelays?: boolean): Promise<ICircuitState> {
         if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError('Circuit or Feature id not valid', id, 'Circuit'));
         let c = sys.circuits.getInterfaceById(id);
         if (c.master !== 0) return await super.setCircuitStateAsync(id, val);
@@ -1510,15 +1627,74 @@ export class TouchCircuitCommands extends CircuitCommands {
         });
 
     }
-    public async setLightThemeAsync(id: number, theme: number) {
+    public async setLightThemeAsync(id: number, theme: number): Promise<ICircuitState> {
         // Re-route this as we cannot set individual circuit themes in *Touch.
         return this.setLightGroupThemeAsync(id, theme);
+    }
+    public async runLightGroupCommandAsync(obj: any): Promise<ICircuitState> {
+        // Do all our validation.
+        try {
+            let id = parseInt(obj.id, 10);
+            let cmd = typeof obj.command !== 'undefined' ? sys.board.valueMaps.lightGroupCommands.findItem(obj.command) : { val: 0, name: 'undefined' };
+            if (cmd.val === 0) return Promise.reject(new InvalidOperationError(`Light group command ${cmd.name} does not exist`, 'runLightGroupCommandAsync'));
+            if (isNaN(id)) return Promise.reject(new InvalidOperationError(`Light group ${id} does not exist`, 'runLightGroupCommandAsync'));
+            let grp = sys.lightGroups.getItemById(id);
+            let nop = sys.board.valueMaps.circuitActions.getValue(cmd.name);
+            let sgrp = state.lightGroups.getItemById(grp.id);
+            sgrp.action = nop;
+            sgrp.emitEquipmentChange();
+            switch (cmd.name) {
+                case 'colorset':
+                    await this.sequenceLightGroupAsync(id, 'colorset');
+                    break;
+                case 'colorswim':
+                    await this.sequenceLightGroupAsync(id, 'colorswim');
+                    break;
+                case 'colorhold':
+                    await this.setLightGroupThemeAsync(id, 190);
+                    break;
+                case 'colorrecall':
+                    await this.setLightGroupThemeAsync(id, 191);
+                    break;
+                case 'lightthumper':
+                    await this.setLightGroupThemeAsync(id, 208);
+                    break;
+            }
+            sgrp.action = 0;
+            sgrp.emitEquipmentChange();
+            return sgrp;
+        }
+        catch (err) { return Promise.reject(`Error runLightGroupCommandAsync ${err.message}`); }
+    }
+    public async runLightCommandAsync(obj: any): Promise<ICircuitState> {
+        // Do all our validation.
+        try {
+            let id = parseInt(obj.id, 10);
+            let cmd = typeof obj.command !== 'undefined' ? sys.board.valueMaps.lightCommands.findItem(obj.command) : { val: 0, name: 'undefined' };
+            if (cmd.val === 0) return Promise.reject(new InvalidOperationError(`Light command ${cmd.name} does not exist`, 'runLightCommandAsync'));
+            if (isNaN(id)) return Promise.reject(new InvalidOperationError(`Light ${id} does not exist`, 'runLightCommandAsync'));
+            let circ = sys.circuits.getItemById(id);
+            if (!circ.isActive) return Promise.reject(new InvalidOperationError(`Light circuit #${id} is not active`, 'runLightCommandAsync'));
+            let type = sys.board.valueMaps.circuitFunctions.transform(circ.type);
+            if (!type.isLight) return Promise.reject(new InvalidOperationError(`Circuit #${id} is not a light`, 'runLightCommandAsync'));
+            let nop = sys.board.valueMaps.circuitActions.getValue(cmd.name);
+            let slight = state.circuits.getItemById(circ.id);
+            slight.action = nop;
+            slight.emitEquipmentChange();
+            // Touch boards cannot change the theme or color of a single light.
+            slight.action = 0;
+            slight.emitEquipmentChange();
+            return slight;
+        }
+        catch (err) { return Promise.reject(`Error runLightCommandAsync ${err.message}`); }
     }
     public async setLightGroupThemeAsync(id = sys.board.equipmentIds.circuitGroups.start, theme: number): Promise<ICircuitState> {
         return new Promise<ICircuitState>((resolve, reject) => {
             const grp = sys.lightGroups.getItemById(id);
             const sgrp = state.lightGroups.getItemById(id);
             grp.lightingTheme = sgrp.lightingTheme = theme;
+            sgrp.action = sys.board.valueMaps.circuitActions.getValue('lighttheme');
+            sgrp.emitEquipmentChange();
             let out = Outbound.create({
                 action: 96,
                 payload: [theme, 0],
@@ -1562,6 +1738,7 @@ export class TouchCircuitCommands extends CircuitCommands {
                                     setImmediate(function () { sys.board.circuits.sequenceLightGroupAsync(grp.id, 'color'); });
                                 // other themes for magicstream?
                             }
+                            sgrp.action = 0;
                             sgrp.hasChanged = true; // Say we are dirty but we really are pure as the driven snow.
                             state.emitEquipmentChanges();
                             resolve(sgrp);
@@ -1653,30 +1830,34 @@ class TouchFeatureCommands extends FeatureCommands {
 
 }
 class TouchChlorinatorCommands extends ChlorinatorCommands {
-    public setChlorAsync(obj: any): Promise<ChlorinatorState> {
+    public async setChlorAsync(obj: any): Promise<ChlorinatorState> {
         let id = parseInt(obj.id, 10);
+        // Bail out right away if this is not controlled by the OCP.
+        if (typeof obj.master !== 'undefined' && parseInt(obj.master, 10) !== 0) return super.setChlorAsync(obj);
         let isAdd = false;
-        let isVirtual = false;
-        if (id <= 0 || isNaN(id)) id = 1;
-        let chlor = sys.chlorinators.getItemById(id);
-        if (id < 0 || isNaN(id)) {
-            isAdd = true;
-            chlor.master = utils.makeBool(obj.isVirtual) ? 0 : 1;
-            // Calculate an id for the chlorinator.  The messed up part is that if a chlorinator is not attached to the OCP, its address
-            // cannot be set by the MUX.  This will have to wait.
+        if (isNaN(id) || id <= 0) {
+            // We are adding so we need to see if there is another chlorinator that is not external.
+            if (sys.chlorinators.count(elem => elem.master !== 2) > sys.equipment.maxChlorinators) return Promise.reject(new InvalidEquipmentDataError(`The max number of chlorinators has been exceeded you may only add ${sys.equipment.maxChlorinators}`, 'chlorinator', sys.equipment.maxChlorinators));
             id = 1;
+            isAdd = true;
         }
-        //let chlor = extend(true, {}, sys.chlorinators.getItemById(id).get(), obj);
-        // If this is a virtual chlorinator then go to the base class and handle it from there.
+        let chlor = sys.chlorinators.getItemById(id);
+        if (chlor.master !== 0 && !isAdd) return super.setChlorAsync(obj);
+
         // RKS: I am not even sure this can be done with Touch as the master on the RS485 bus.
-        if (chlor.master === 1 || isVirtual) return super.setChlorAsync(obj);
-        let name = obj.name || 'IntelliChlor' + id;
-        let poolSetpoint = parseInt(obj.poolSetpoint, 10);
-        let spaSetpoint = parseInt(obj.spaSetpoint, 10);
+        if (typeof chlor.master === 'undefined') chlor.master = 0;
+        let name = obj.name || chlor.name || 'IntelliChlor' + id;
         let superChlorHours = parseInt(obj.superChlorHours, 10);
         if (typeof obj.superChlorinate !== 'undefined') obj.superChlor = utils.makeBool(obj.superChlorinate);
         let superChlorinate = typeof obj.superChlor === 'undefined' ? undefined : utils.makeBool(obj.superChlor);
+        let isDosing = typeof obj.isDosing !== 'undefined' ? utils.makeBool(obj.isDosing) : chlor.isDosing;
         let disabled = typeof obj.disabled !== 'undefined' ? utils.makeBool(obj.disabled) : chlor.disabled;
+        let poolSetpoint = typeof obj.poolSetpoint !== 'undefined' ? parseInt(obj.poolSetpoint, 10) : chlor.poolSetpoint;
+        let spaSetpoint = typeof obj.spaSetpoint !== 'undefined' ? parseInt(obj.spaSetpoint, 10) : chlor.spaSetpoint;
+        let model = typeof obj.model !== 'undefined' ? sys.board.valueMaps.chlorinatorModel.encode(obj.model) : chlor.model || 0;
+        let chlorType = typeof obj.type !== 'undefined' ? sys.board.valueMaps.chlorinatorType.encode(obj.type) : chlor.type || 0;
+        let portId = typeof obj.portId !== 'undefined' ? parseInt(obj.portId, 10) : chlor.portId;
+        if (portId !== chlor.portId && sys.chlorinators.count(elem => elem.id !== chlor.id && elem.portId === portId && elem.master !== 2) > 0) return Promise.reject(new InvalidEquipmentDataError(`Another chlorinator is installed on port #${portId}.  Only one chlorinator can be installed per port.`, 'Chlorinator', portId));
         if (isAdd) {
             if (isNaN(poolSetpoint)) poolSetpoint = 50;
             if (isNaN(spaSetpoint)) spaSetpoint = 10;
@@ -1684,8 +1865,8 @@ class TouchChlorinatorCommands extends ChlorinatorCommands {
             if (typeof superChlorinate === 'undefined') superChlorinate = false;
         }
         else {
-            if (isNaN(poolSetpoint)) poolSetpoint = chlor.poolSetpoint;
-            if (isNaN(spaSetpoint)) spaSetpoint = chlor.spaSetpoint;
+            if (isNaN(poolSetpoint)) poolSetpoint = chlor.poolSetpoint || 0;
+            if (isNaN(spaSetpoint)) spaSetpoint = chlor.spaSetpoint || 0;
             if (isNaN(superChlorHours)) superChlorHours = chlor.superChlorHours;
             if (typeof superChlorinate === 'undefined') superChlorinate = utils.makeBool(chlor.superChlor);
         }
@@ -1695,61 +1876,103 @@ class TouchChlorinatorCommands extends ChlorinatorCommands {
         let body = sys.board.bodies.mapBodyAssociation(chlor.body);
         if (typeof body === 'undefined') {
             if (sys.equipment.shared) body = 32;
-            else if (!sys.equipment.dual) body = 1;
+            else if (!sys.equipment.dual) body = 0;
             else return Promise.reject(new InvalidEquipmentDataError(`Chlorinator body association is not valid: ${body}`, 'chlorinator', body));
         }
         if (poolSetpoint > 100 || poolSetpoint < 0) return Promise.reject(new InvalidEquipmentDataError(`Chlorinator poolSetpoint is out of range: ${chlor.poolSetpoint}`, 'chlorinator', chlor.poolSetpoint));
         if (spaSetpoint > 100 || spaSetpoint < 0) return Promise.reject(new InvalidEquipmentDataError(`Chlorinator spaSetpoint is out of range: ${chlor.poolSetpoint}`, 'chlorinator', chlor.spaSetpoint));
         if (typeof obj.ignoreSaltReading !== 'undefined') chlor.ignoreSaltReading = utils.makeBool(obj.ignoreSaltReading);
-        return new Promise<ChlorinatorState>((resolve, reject) => {
-            let out = Outbound.create({
-                dest: 16,
-                action: 153,
-                payload: [disabled ? 0 : (spaSetpoint << 1) + 1, disabled ? 0 : poolSetpoint,
-                utils.makeBool(superChlorinate) && superChlorHours > 0 ? superChlorHours + 128 : 0,  // We only want to set the superChlor when the user sends superChlor = true
-                    0, 0, 0, 0, 0, 0, 0],
-                retries: 3,
-                response: true,
-                onComplete: (err) => {
-                    if (err) {
-                        logger.error(`Error setting Chlorinator values: ${err.message}`);
-                        reject(err);
-                    }
-                    let schlor = state.chlorinators.getItemById(id, true);
-                    let cchlor = sys.chlorinators.getItemById(id, true);
-                    schlor.isActive = cchlor.isActive = true;
-                    schlor.superChlor = cchlor.superChlor = superChlorinate;
-                    schlor.poolSetpoint = cchlor.poolSetpoint = poolSetpoint;
-                    schlor.spaSetpoint = cchlor.spaSetpoint = spaSetpoint;
-                    schlor.superChlorHours = cchlor.superChlorHours = superChlorHours;
-                    schlor.body = cchlor.body = body;
-                    cchlor.address = 79 + id;
 
-                    let request25Packet = Outbound.create({
-                        dest: 16,
-                        action: 217,
-                        payload: [0],
-                        retries: 3,
-                        response: true,
-                        onComplete: (err) => {
-                            if (err) {
-                                logger.error(`Error requesting chlor status: ${err.message}`);
-                                reject(err);
-                            }
-                            else
-                                resolve(state.chlorinators.getItemById(id));
-                            state.emitEquipmentChanges();
+        let _timeout: NodeJS.Timeout;
+        try {
+            let request153packet = new Promise<void>((resolve, reject) => {
+                let out = Outbound.create({
+                    dest: 16,
+                    action: 153,
+                    // removed disable ? 0 : (spaSetpoint << 1) + 1 because only deleteChlorAsync should remove it from the OCP
+                    payload: [(disabled ? 0 : isDosing ? 100 << 1: spaSetpoint << 1) + 1, disabled ? 0 : isDosing ? 100 : poolSetpoint,
+                    utils.makeBool(superChlorinate) && superChlorHours > 0 ? superChlorHours + 128 : 0,  // We only want to set the superChlor when the user sends superChlor = true
+                        0, 0, 0, 0, 0, 0, 0],
+                    retries: 3,
+                    response: true,
+                    // scope: Math.random(),
+                    onComplete: (err)=>{
+                        if (err) {
+                            logger.error(`Error setting Chlorinator values: ${err.message}`);
+                            // in case of race condition
+                            if (typeof reject !== 'undefined') reject(err);
+                            reject = undefined;
                         }
-                    });
-                    conn.queueSendMessage(request25Packet);
-                }
+                        else {
+                            resolve();
+                            resolve = undefined;
+                        }
+                    }
+                });
+                conn.queueSendMessage(out);
+                _timeout = setTimeout(()=>{
+                    if (typeof reject === 'undefined' || typeof resolve === 'undefined') return;
+                    reject(new EquipmentTimeoutError(`no chlor response in 7 seconds`, `chlorTimeOut`));
+                    reject = undefined;
+
+                }, 3000);
             });
-            conn.queueSendMessage(out);
-        });
+            await request153packet;
+            let schlor = state.chlorinators.getItemById(id, true);
+            chlor.disabled = disabled;
+            schlor.isActive = chlor.isActive = true;
+            schlor.superChlor = chlor.superChlor = superChlorinate;
+            schlor.poolSetpoint = chlor.poolSetpoint = poolSetpoint;
+            schlor.spaSetpoint = chlor.spaSetpoint = spaSetpoint;
+            schlor.superChlorHours = chlor.superChlorHours = superChlorHours;
+            schlor.body = chlor.body = body;
+            chlor.address = 79 + id;
+            chlor.name = schlor.name = name;
+            schlor.model = chlor.model = model;
+            schlor.type = chlor.type = chlorType;
+            chlor.isDosing = isDosing;
+            chlor.portId = portId;
+
+            let request217Packet = new Promise<void>((resolve, reject) => {
+                let out = Outbound.create({
+                    dest: 16,
+                    action: 217,
+                    payload: [0],
+                    retries: 3,
+                    // scope: Math.random(),
+                    response: true,
+                    onComplete: (err) => {
+                        // if (typeof reject === 'undefined') {
+                        //     logger.error(`reject chlor already called.`)
+                        // }
+                        if (err) {
+                            logger.error(`Error requesting chlor status: ${err.message}`);
+                            reject(err);
+                        }
+                        else{
+                            resolve();
+                        }
+                    }
+                })
+                conn.queueSendMessage(out);
+            });
+            await request217Packet;
+            if (typeof _timeout !== 'undefined'){
+                clearTimeout(_timeout);
+                _timeout = undefined;
+            }
+            state.emitEquipmentChanges();
+            return state.chlorinators.getItemById(id);
+        } catch (err) {
+            logger.error(`*Touch setChlorAsync Error: ${err.message}`);
+            return Promise.reject(err);
+        }
     }
     public async deleteChlorAsync(obj: any): Promise<ChlorinatorState> {
         let id = parseInt(obj.id, 10);
-        if (isNaN(id)) obj.id = 1;
+        if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Chlorinator id is not valid: ${obj.id}`, 'chlorinator', obj.id));
+        let chlor = sys.chlorinators.getItemById(id);
+        if (chlor.master === 1) return await super.deleteChlorAsync(obj);
         return new Promise<ChlorinatorState>((resolve, reject) => {
             let out = Outbound.create({
                 dest: 16,
@@ -1763,8 +1986,9 @@ class TouchChlorinatorCommands extends ChlorinatorCommands {
                         reject(err);
                     }
                     else {
-                        let cstate = state.chlorinators.getItemById(id);
-                        let chlor = sys.chlorinators.getItemById(id);
+                        ncp.chlorinators.deleteChlorinatorAsync(id).then(()=>{});
+                        let cstate = state.chlorinators.getItemById(id, true);
+                        chlor = sys.chlorinators.getItemById(id, true);
                         chlor.isActive = cstate.isActive = false;
                         sys.chlorinators.removeItemById(id);
                         state.chlorinators.removeItemById(id);
@@ -1906,10 +2130,11 @@ class TouchPumpCommands extends PumpCommands {
                 }
             }
             isAdd = true;
+            pump = sys.pumps.getItemById(id, true);
         }
         else {
             pump = sys.pumps.getItemById(id, false);
-            if (data.master > 0 || pump.master > 0 || pump.isVirtual) return await super.setPumpAsync(data);
+            if (data.master > 0 || pump.master > 0) return await super.setPumpAsync(data);
             ntype = typeof data.type === 'undefined' ? pump.type : parseInt(data.type, 10);
             if (isNaN(ntype)) return Promise.reject(new InvalidEquipmentDataError(`Pump type ${data.type} is not valid`, 'Pump', data));
             type = sys.board.valueMaps.pumpTypes.transform(ntype);
@@ -1940,7 +2165,6 @@ class TouchPumpCommands extends PumpCommands {
         if (type.name === 'ss') {
             // The OCP doesn't deal with single speed pumps.  Simply add it to the config.
             data.circuits = [];
-            pump = sys.pumps.getItemById(id, true);
             pump.set(pump);
             let spump = state.pumps.getItemById(id, true);
             for (let prop in spump) {
@@ -1972,21 +2196,25 @@ class TouchPumpCommands extends PumpCommands {
                 retries: 2,
                 response: Response.create({ action: 1, payload: [155] })
             });
-            outc.appendPayloadByte(typeof type.maxPrimingTime !== 'undefined' ? data.primingTime : 0, pump.primingTime | 0);
             outc.appendPayloadBytes(0, 44);
-            if (typeof type.maxPrimingTime !== 'undefined' && type.maxPrimingTime > 0) {
+            if (type.val === 128){
+                outc.setPayloadByte(3, 2);
+            }
+            if (typeof type.maxPrimingTime !== 'undefined' && type.maxPrimingTime > 0 && type.val >=64) {
+                outc.setPayloadByte(2, parseInt(data.primingTime, 10), pump.primingTime || 1);
                 let primingSpeed = typeof data.primingSpeed !== 'undefined' ? parseInt(data.primingSpeed, 10) : pump.primingSpeed || type.minSpeed;
                 outc.setPayloadByte(21, Math.floor(primingSpeed / 256));
-                outc.setPayloadByte(30, primingSpeed - (Math.floor(primingSpeed / 256) * 256));
+                outc.setPayloadByte(30, primingSpeed % 256);
             }
-            if (type.val > 1 && type.val < 64) { // Any VF pump.  It probably only goes up to Circuit 40 because that's how many circuits *Touch can support.
+            if (type.val === 1) { // Any VF pump. 
                 outc.setPayloadByte(1, parseInt(data.backgroundCircuit, 10), pump.backgroundCircuit || 6);
+                outc.setPayloadByte(2, parseInt(data.filterSize, 10) / 1000, pump.filterSize / 1000 || 15);
+                // outc.setPayloadByte(2, body.capacity / 1000, 15);  RSG - This is filter size, which may or may not equal the body size.
                 outc.setPayloadByte(3, parseInt(data.turnovers, 10), pump.turnovers || 2);
                 let body = sys.bodies.getItemById(1, sys.equipment.maxBodies >= 1);
-                outc.setPayloadByte(2, body.capacity / 1000, 15);
                 outc.setPayloadByte(21, parseInt(data.manualFilterGPM, 10), pump.manualFilterGPM || 30);
                 outc.setPayloadByte(22, parseInt(data.primingSpeed, 10), pump.primingSpeed || 55);
-                let primingTime = typeof data.primingTime !== 'undefined' ? parseInt(data.primingTime, 10) : pump.primingTime;
+                let primingTime = typeof data.primingTime !== 'undefined' ? parseInt(data.primingTime, 10) : pump.primingTime || 0;
                 let maxSystemTime = typeof data.maxSystemTime !== 'undefined' ? parseInt(data.maxSystemTime, 10) : pump.maxSystemTime;
                 outc.setPayloadByte(23, primingTime | maxSystemTime << 4, 5);
                 outc.setPayloadByte(24, parseInt(data.maxPressureIncrease, 10), pump.maxPressureIncrease || 10);
@@ -1994,20 +2222,29 @@ class TouchPumpCommands extends PumpCommands {
                 outc.setPayloadByte(26, parseInt(data.backwashTime, 10), pump.backwashTime || 5);
                 outc.setPayloadByte(27, parseInt(data.rinseTime, 10), pump.rinseTime || 1);
                 outc.setPayloadByte(28, parseInt(data.vacuumFlow, 10), pump.vacuumFlow || 50);
-                outc.setPayloadByte(28, parseInt(data.vacuumTime, 10), pump.vacuumTime || 10);
+                outc.setPayloadByte(30, parseInt(data.vacuumTime, 10), pump.vacuumTime || 10);
             }
             if (typeof type.maxCircuits !== 'undefined' && type.maxCircuits > 0 && typeof data.circuits !== 'undefined') { // This pump type supports circuits
                 for (let i = 1; i <= data.circuits.length && i <= type.maxCircuits; i++) {
-                    let c = data.circuits[i - 1];
+                    // RKS: This notion of always returning the max number of circuits was misguided.  It leaves gaps in the circuit definitions and makes the pump
+                    // layouts difficult when there are a variety of supported circuits.  For instance with SF pumps you only get 4.
+                    let c = i >= data.circuits.length - 1 ? { speed: type.minSpeed || 0, flow: type.minFlow || 0, circuit: 0 } : data.circuits[i - 1];
+                    //let c = data.circuits[i - 1];
                     let speed = parseInt(c.speed, 10);
                     let flow = parseInt(c.flow, 10);
                     if (isNaN(speed)) speed = type.minSpeed;
                     if (isNaN(flow)) flow = type.minFlow;
                     outc.setPayloadByte(i * 2 + 3, parseInt(c.circuit, 10), 0);
-                    c.units = parseInt(c.units, 10) || type.name === 'vf' ? sys.board.valueMaps.pumpUnits.getValue('gpm') : sys.board.valueMaps.pumpUnits.getValue('rpm');
+                    let units;
+                    if (type.name === 'vf') units = sys.board.valueMaps.pumpUnits.getValue('gpm');
+                    else if (type.name === 'vs') units = sys.board.valueMaps.pumpUnits.getValue('rpm');
+                    else units = sys.board.valueMaps.pumpUnits.encode(c.units);
+                    if (isNaN(units)) units = sys.board.valueMaps.pumpUnits.getValue('rpm');
+                    c.units = units;
+                    //c.units = parseInt(c.units, 10) || type.name === 'vf' ? sys.board.valueMaps.pumpUnits.getValue('gpm') : sys.board.valueMaps.pumpUnits.getValue('rpm');
                     if (typeof type.minSpeed !== 'undefined' && c.units === sys.board.valueMaps.pumpUnits.getValue('rpm')) {
                         outc.setPayloadByte(i * 2 + 4, Math.floor(speed / 256)); // Set to rpm
-                        outc.setPayloadByte(i + 21, speed - (Math.floor(speed / 256) * 256));
+                        outc.setPayloadByte(i + 21, speed % 256);
                         c.speed = speed;
                     }
                     else if (typeof type.minFlow !== 'undefined' && c.units === sys.board.valueMaps.pumpUnits.getValue('gpm')) {
@@ -2044,7 +2281,7 @@ class TouchPumpCommands extends PumpCommands {
         // [165,33,16,34,155,46],[1,128,0,2,0,16,12,6,7,1,9,4,11,11,3,128,8,0,2,18,2,3,128,8,196,184,232,152,188,238,232,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[9,75]
         const setPumpConfig = Outbound.create({
             action: 155,
-            payload: [pump.id, pump.type, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            payload: [pump.id, pump.type, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             retries: 2,
             response: true
         });
@@ -2120,6 +2357,36 @@ class TouchPumpCommands extends PumpCommands {
         spump.type = pump.type;
         spump.status = 0;
     }
+    public async deletePumpAsync(data: any):Promise<Pump>{
+        let id = parseInt(data.id, 10);
+        if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`deletePumpAsync: Pump ${id} is not valid.`, 0, `pump`));
+        let pump = sys.pumps.getItemById(id, false);
+        if (pump.master === 1) return super.deletePumpAsync(data);
+        const outc = Outbound.create({
+            action: 155,
+            payload: [id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            retries: 2,
+            response: true
+        });
+        return new Promise<Pump>((resolve, reject) => {
+            outc.onComplete = (err, msg) => {
+                if (err) reject(err);
+                else {
+                    sys.pumps.removeItemById(id);
+                    state.pumps.removeItemById(id);
+                    resolve(sys.pumps.getItemById(id,false));
+                    const pumpConfigRequest = Outbound.create({
+                        action: 216,
+                        payload: [id],
+                        retries: 2,
+                        response: true
+                    });
+                    conn.queueSendMessage(pumpConfigRequest);
+                }
+            };
+            conn.queueSendMessage(outc);
+        });
+    }
 }
 class TouchHeaterCommands extends HeaterCommands {
     public getInstalledHeaterTypes(body?: number): any {
@@ -2180,34 +2447,155 @@ class TouchHeaterCommands extends HeaterCommands {
     }
     // RKS: Not sure what to do with this as the heater data for Touch isn't actually processed anywhere.
     public async setHeaterAsync(obj: any): Promise<Heater> {
+        if (obj.master === 1 || parseInt(obj.id, 10) > 255) return super.setHeaterAsync(obj);
         return new Promise<Heater>((resolve, reject) => {
             let id = typeof obj.id === 'undefined' ? -1 : parseInt(obj.id, 10);
             if (isNaN(id)) return reject(new InvalidEquipmentIdError('Heater Id is not valid.', obj.id, 'Heater'));
             let heater: Heater;
+            let address: number;
+            let out = Outbound.create({
+                action: 162,
+                payload: [5, 0, 0],
+                retries: 2,
+                // I am assuming that there should be an action 34 when the 162 is sent but I do not have this
+                // data.
+                response: Response.create({ dest: -1, action: 34 })
+            });
+            let htype;
             if (id <= 0) {
-                // We are adding a heater.  In this case all heaters are virtual.
-                let heaters = sys.heaters.filter(h => h.isVirtual === false);
-                id = heaters.getMaxId() + 1;
-            }
-            heater = sys.heaters.getItemById(id, true);
-            if (typeof obj !== undefined) {
-                for (var s in obj) {
-                    if (s === 'id') continue;
-                    heater[s] = obj[s];
+                // Touch only supports two installed heaters.  So the type determines the id.
+                if (sys.heaters.length > sys.equipment.maxHeaters) return reject(new InvalidEquipmentDataError('The maximum number of heaters are already installed.', 'Heater', sys.heaters.length));
+                htype = sys.board.valueMaps.heaterTypes.findItem(obj.type);
+                if (typeof htype === 'undefined') return reject(new InvalidEquipmentDataError('Heater type is not valid.', 'Heater', obj.heaterType));
+                // Check to see if we can find any heaters of this type already installed.
+                if (sys.heaters.count(h => h.type === htype.val) > 0) return reject(new InvalidEquipmentDataError(`Only one ${htype.desc} heater can be installed`, 'Heater', htype));
+                // Next we need to see if this heater is compatible with all the other heaters.  For Touch you may only have the following combos.
+                // 1 Gas + 1 Solar
+                // 1 Gas + 1 Heatpump
+                // 1 Hybrid
+
+                // Heater ids are as follows.
+                // 1 = Gas Heater
+                // 2 = Solar
+                // 3 = UltraTemp (HEATPUMPCOM)
+                // 4 = UltraTemp ETi (Hybrid)
+                switch (htype.name) {
+                    case 'gas':
+                        id = 1;
+                        break;
+                    case 'solar':
+                        out.setPayloadByte(0, out.payload[0] | 0x02);
+                        // Set the start and stop temp delta.
+                        out.setPayloadByte(1, (obj.freeze ? 0x80 : 0x00) | (obj.coolingEnabled ? 0x20 : 0x00));
+                        out.setPayloadByte(2, ((obj.startTempDelta || 6) - 3 << 6) | ((obj.stopTempDelta || 3) - 2 << 1));
+                        id = 2;
+                        break;
+                    case 'ultratemp':
+                    case 'heatpump':
+                        address = 112;
+                        out.setPayloadByte(0, out.payload[0] | 0x02);
+                        out.setPayloadByte(1, out.payload[1] | 0x10 | (obj.coolingEnabled ? 0x20 : 0x00));
+                        id = 3;
+                        break;
+                    case 'hybrid':
+                        // If we are adding a hybrid heater this means that the gas heater is to be replaced.  This means that only
+                        // a gas heater can be installed.
+                        if (sys.heaters.length > 1) return reject(new InvalidEquipmentDataError(`Hybrid heaters can only be installed by themselves`, 'Heater', htype));
+                        if (sys.heaters.getItemByIndex(0).type > 1) return reject(new InvalidEquipmentDataError(`Hybrid heaters can only replace the gas heater`, 'Heater', htype));
+                        out.setPayloadByte(0, 5);
+                        out.setPayloadByte(1, 16);
+                        // NOTE: byte 2 makes absolutely no sense. Perhaps this is because we have no idea what message action 16 is.  This probably contains the rest of the info
+                        // for heaters on Touch panels.
+                        out.setPayloadByte(2, 118);
+                        id = 4;
+                        break;
                 }
             }
-            let hstate = state.heaters.getItemById(id, true);
-            //hstate.isVirtual = heater.isVirtual = true;
-            hstate.name = heater.name;
-            hstate.type = heater.type;
-            heater.master = 1;
-            sys.board.heaters.updateHeaterServices();
-            sys.board.heaters.syncHeaterStates();
-            resolve(heater);
+            else {
+                // This all works because there are 0 items that can be set on a Touch heater with the exception of a few items on solar.  This means that the
+                // first two bytes are calculated based upon the existing heaters.
+                heater = sys.heaters.find(x => id === x.id);
+                if (typeof heater === 'undefined') return reject(new InvalidEquipmentIdError(`Heater #${id} is not installed and cannot be updated.`, id, 'Heater'));
+                // So here we go with the settings.
+                htype = sys.board.valueMaps.heaterTypes.findItem(heater.type);
+                switch (htype.name) {
+                    case 'gas':
+                        break;
+                    case 'solar':
+                        out.setPayloadByte(0, out.payload[0] | 0x02);
+                        // Set the start and stop temp delta.
+                        out.setPayloadByte(1, (obj.freeze ? 0x80 : 0x00) | (obj.coolingEnabled ? 0x20 : 0x00));
+                        out.setPayloadByte(2, ((obj.startTempDelta || 6) - 3 << 6) | ((obj.stopTempDelta || 3) - 2 << 1));
+                        break;
+                    case 'ultratemp':
+                    case 'heatpump':
+                        address = 112;
+                        out.setPayloadByte(0, out.payload[0] | 0x02);
+                        out.setPayloadByte(1, out.payload[1] | 0x10 | (obj.coolingEnabled ? 0x20 : 0x00));
+                        break;
+                    case 'hybrid':
+                        address = 112;
+                        out.setPayloadByte(0, 5);
+                        out.setPayloadByte(1, 16);
+                        // NOTE: byte 2 makes absolutely no sense. Perhaps this is because we have no idea what message action 144/16 is.  This probably contains the rest of the info
+                        // for heaters on Touch panels.
+                        out.setPayloadByte(2, 118);
+                        break;
+                }
+            }
+            // Set the bytes from the existing installed heaters.
+            for (let i = 0; i < sys.heaters.length; i++) {
+                let h = sys.heaters.getItemByIndex(i);
+                if (h.id === id) continue;
+                let ht = sys.board.valueMaps.heaterTypes.transform(h.type);
+                switch (ht.name) {
+                    case 'gas':
+                        break;
+                    case 'solar':
+                        out.setPayloadByte(0, out.payload[0] | 0x02);
+                        out.setPayloadByte(1, (h.freeze ? 0x80 : 0x00) | (h.coolingEnabled ? 0x20 : 0x00));
+                        out.setPayloadByte(2, ((h.startTempDelta || 6) - 3 << 6) | ((h.stopTempDelta || 3) - 2 << 1));
+                        break;
+                    case 'ultratemp':
+                    case 'heatpump':
+                        out.setPayloadByte(0, out.payload[0] | 0x02);
+                        out.setPayloadByte(1, out.payload[1] | 0x10 | (h.coolingEnabled ? 0x20 : 0x00));
+                        break;
+                    case 'hybrid':
+                        break;
+                }
+            }
+            out.onComplete = (err, msg) => {
+                if (err) reject(err);
+                else {
+                    heater = sys.heaters.getItemById(id, true);
+                    let sheater = state.heaters.getItemById(id, true);
+                    for (var s in obj) {
+                        switch (s) {
+                            case 'id':
+                            case 'name':
+                            case 'type':
+                            case 'address':
+                                break;
+                            default:
+                                heater[s] = obj[s];
+                                break;
+                        }
+                    }
+                    sheater.name = heater.name = typeof obj.name !== 'undefined' ? obj.name : heater.name;
+                    sheater.type = heater.type = htype.val;
+                    heater.address = address;
+                    heater.master = 0;
+                    heater.body = sys.equipment.shared ? 32 : 0;
+                    sys.board.heaters.updateHeaterServices();
+                    sys.board.heaters.syncHeaterStates();
+                    resolve(heater);
+                }
+            }
         });
     }
     public async deleteHeaterAsync(obj: any): Promise<Heater> {
-        if (utils.makeBool(obj.isVirtual) || obj.master === 1 || parseInt(obj.id, 10) > 255) return await super.deleteHeaterAsync(obj);
+        if (utils.makeBool(obj.master === 1 || parseInt(obj.id, 10) > 255)) return super.deleteHeaterAsync(obj);
         return new Promise<Heater>((resolve, reject) => {
             let id = parseInt(obj.id, 10);
             if (isNaN(id)) return reject(new InvalidEquipmentIdError('Cannot delete.  Heater Id is not valid.', obj.id, 'Heater'));
@@ -2226,45 +2614,64 @@ class TouchHeaterCommands extends HeaterCommands {
         let heatPumpInstalled = htypes.heatpump > 0;
         let ultratempInstalled = htypes.ultratemp > 0;
         let gasHeaterInstalled = htypes.gas > 0;
+        let hybridInstalled = htypes.hybrid > 0;
         sys.board.valueMaps.heatModes.set(0, { name: 'off', desc: 'Off' });
         sys.board.valueMaps.heatSources.set(0, { name: 'off', desc: 'Off' });
-        if (gasHeaterInstalled) {
-            sys.board.valueMaps.heatModes.set(1, { name: 'heater', desc: 'Heater' });
-            sys.board.valueMaps.heatSources.set(2, { name: 'heater', desc: 'Heater' });
+        if (hybridInstalled) {
+            // Source Issue #390
+            // 1 = Heat Pump
+            // 2 = Gas Heater
+            // 3 = Hybrid
+            // 16 = Dual 
+            sys.board.valueMaps.heatModes.set(1, { name: 'heatpump', desc: 'Heat Pump' });
+            sys.board.valueMaps.heatModes.set(2, { name: 'heater', desc: 'Gas Heat' });
+            sys.board.valueMaps.heatModes.set(3, { name: 'heatpumppref', desc: 'Hybrid' });
+            sys.board.valueMaps.heatModes.set(16, { name: 'dual', desc: 'Dual Heat' });
+
+            sys.board.valueMaps.heatSources.set(2, { name: 'heater', desc: 'Gas Heat' });
+            sys.board.valueMaps.heatSources.set(5, { name: 'heatpumppref', desc: 'Hybrid' });
+            sys.board.valueMaps.heatSources.set(20, { name: 'dual', desc: 'Dual Heat' });
+            sys.board.valueMaps.heatSources.set(21, { name: 'heatpump', desc: 'Heat Pump' });
         }
         else {
-            // no heaters (virtual controller)
-            sys.board.valueMaps.heatModes.delete(1);
-            sys.board.valueMaps.heatSources.delete(2);
-        }
-        if (solarInstalled && gasHeaterInstalled) {
-            sys.board.valueMaps.heatModes.set(2, { name: 'solarpref', desc: 'Solar Preferred' });
-            sys.board.valueMaps.heatModes.set(3, { name: 'solar', desc: 'Solar Only' });
-            sys.board.valueMaps.heatSources.set(5, { name: 'solarpref', desc: 'Solar Preferred' });
-            sys.board.valueMaps.heatSources.set(21, { name: 'solar', desc: 'Solar Only' });
-        }
-        else if (heatPumpInstalled && gasHeaterInstalled) {
-            sys.board.valueMaps.heatModes.set(2, { name: 'heatpumppref', desc: 'Heat Pump Preferred' });
-            sys.board.valueMaps.heatModes.set(3, { name: 'heatpump', desc: 'Heat Pump Only' });
-            sys.board.valueMaps.heatSources.set(5, { name: 'heatpumppref', desc: 'Heat Pump Preferred' });
-            sys.board.valueMaps.heatSources.set(21, { name: 'heatpump', desc: 'Heat Pump Only' });
-        }
-        else if (ultratempInstalled && gasHeaterInstalled) {
-            sys.board.valueMaps.heatModes.merge([
-                [2, { name: 'ultratemppref', desc: 'UltraTemp Pref' }],
-                [3, { name: 'ultratemp', desc: 'UltraTemp Only' }]
-            ]);
-            sys.board.valueMaps.heatSources.merge([
-                [5, { name: 'ultratemppref', desc: 'Ultratemp Pref', hasCoolSetpoint: htypes.hasCoolSetpoint }],
-                [21, { name: 'ultratemp', desc: 'Ultratemp Only', hasCoolSetpoint: htypes.hasCoolSetpoint }]
-            ])
-        }
-        else {
-            // only gas
-            sys.board.valueMaps.heatModes.delete(2);
-            sys.board.valueMaps.heatModes.delete(3);
-            sys.board.valueMaps.heatSources.delete(5);
-            sys.board.valueMaps.heatSources.delete(21);
+            if (gasHeaterInstalled) {
+                sys.board.valueMaps.heatModes.set(1, { name: 'heater', desc: 'Heater' });
+                sys.board.valueMaps.heatSources.set(2, { name: 'heater', desc: 'Heater' });
+            }
+            else {
+                // no heaters (virtual controller)
+                sys.board.valueMaps.heatModes.delete(1);
+                sys.board.valueMaps.heatSources.delete(2);
+            }
+            if (solarInstalled && gasHeaterInstalled) {
+                sys.board.valueMaps.heatModes.set(2, { name: 'solarpref', desc: 'Solar Preferred' });
+                sys.board.valueMaps.heatModes.set(3, { name: 'solar', desc: 'Solar Only' });
+                sys.board.valueMaps.heatSources.set(5, { name: 'solarpref', desc: 'Solar Preferred' });
+                sys.board.valueMaps.heatSources.set(21, { name: 'solar', desc: 'Solar Only' });
+            }
+            else if (heatPumpInstalled && gasHeaterInstalled) {
+                sys.board.valueMaps.heatModes.set(2, { name: 'heatpumppref', desc: 'Heat Pump Preferred' });
+                sys.board.valueMaps.heatModes.set(3, { name: 'heatpump', desc: 'Heat Pump Only' });
+                sys.board.valueMaps.heatSources.set(5, { name: 'heatpumppref', desc: 'Heat Pump Preferred' });
+                sys.board.valueMaps.heatSources.set(21, { name: 'heatpump', desc: 'Heat Pump Only' });
+            }
+            else if (ultratempInstalled && gasHeaterInstalled) {
+                sys.board.valueMaps.heatModes.merge([
+                    [2, { name: 'ultratemppref', desc: 'UltraTemp Pref' }],
+                    [3, { name: 'ultratemp', desc: 'UltraTemp Only' }]
+                ]);
+                sys.board.valueMaps.heatSources.merge([
+                    [5, { name: 'ultratemppref', desc: 'Ultratemp Pref', hasCoolSetpoint: htypes.hasCoolSetpoint }],
+                    [21, { name: 'ultratemp', desc: 'Ultratemp Only', hasCoolSetpoint: htypes.hasCoolSetpoint }]
+                ])
+            }
+            else {
+                // only gas
+                sys.board.valueMaps.heatModes.delete(2);
+                sys.board.valueMaps.heatModes.delete(3);
+                sys.board.valueMaps.heatSources.delete(5);
+                sys.board.valueMaps.heatSources.delete(21);
+            }
         }
         sys.board.valueMaps.heatSources.set(32, { name: 'nochange', desc: 'No Change' });
         this.setActiveTempSensors();
@@ -2293,7 +2700,7 @@ class TouchChemControllerCommands extends ChemControllerCommands {
         // Now lets do all our validation to the incoming chem controller data.
         let name = typeof data.name !== 'undefined' ? data.name : chem.name || `IntelliChem - ${address - 143}`;
         let type = sys.board.valueMaps.chemControllerTypes.transformByName('intellichem');
-        // So now we are down to the nitty gritty setting the data for the REM or Homegrown Chem controller.
+        // So now we are down to the nitty gritty setting the data for the REM Chem controller.
         let calciumHardness = typeof data.calciumHardness !== 'undefined' ? parseInt(data.calciumHardness, 10) : chem.calciumHardness;
         let cyanuricAcid = typeof data.cyanuricAcid !== 'undefined' ? parseInt(data.cyanuricAcid, 10) : chem.cyanuricAcid;
         let alkalinity = typeof data.alkalinity !== 'undefined' ? parseInt(data.alkalinity, 10) : chem.alkalinity;
@@ -2341,6 +2748,8 @@ class TouchChemControllerCommands extends ChemControllerCommands {
         chem.orp.tank.capacity = 6;
         let acidTankLevel = typeof data.ph !== 'undefined' && typeof data.ph.tank !== 'undefined' && typeof data.ph.tank.level !== 'undefined' ? parseInt(data.ph.tank.level, 10) : schem.ph.tank.level;
         let orpTankLevel = typeof data.orp !== 'undefined' && typeof data.orp.tank !== 'undefined' && typeof data.orp.tank.level !== 'undefined' ? parseInt(data.orp.tank.level, 10) : schem.orp.tank.level;
+        // OCP needs to set the IntelliChem as active so it knows that it exists
+
         return new Promise<ChemController>((resolve, reject) => {
             let out = Outbound.create({
                 action: 211,
@@ -2361,7 +2770,7 @@ class TouchChemControllerCommands extends ChemControllerCommands {
                         chem.cyanuricAcid = cyanuricAcid;
                         chem.alkalinity = alkalinity;
                         chem.borates = borates;
-                        chem.body = schem.body = body;
+                        chem.body = schem.body = body.val;
                         schem.isActive = chem.isActive = true;
                         chem.lsiRange.enabled = lsiRange.enabled;
                         chem.lsiRange.low = lsiRange.low;
@@ -2378,7 +2787,8 @@ class TouchChemControllerCommands extends ChemControllerCommands {
                         chem.address = schem.address = address;
                         chem.name = schem.name = name;
                         chem.flowSensor.enabled = false;
-                        resolve(chem);
+                        sys.board.bodies.setBodyAsync(sys.bodies.getItemById(1, false))
+                          .then(()=>{resolve(chem)});
                     }
                 }
             });
@@ -2402,45 +2812,48 @@ class TouchChemControllerCommands extends ChemControllerCommands {
     public async deleteChemControllerAsync(data: any): Promise<ChemController> {
         let id = typeof data.id !== 'undefined' ? parseInt(data.id, 10) : -1;
         if (typeof id === 'undefined' || isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid Chem Controller Id`, id, 'chemController'));
-        let chem = sys.chemControllers.getItemById(id);
+        let chem = sys.board.chemControllers.findChemController(data);
         if (chem.master === 1) return super.deleteChemControllerAsync(data);
         return new Promise<ChemController>((resolve, reject) => {
-            let out = Outbound.create({
-                action: 211,
-                response: Response.create({ protocol: Protocol.IntelliChem, action: 1, payload: [211] }),
-                retries: 3,
-                payload: [],
-                onComplete: (err) => {
-                    if (err) { reject(err); }
-                    else {
-                        let schem = state.chemControllers.getItemById(id);
-                        chem.isActive = false;
-                        chem.ph.tank.capacity = chem.orp.tank.capacity = 6;
-                        chem.ph.tank.units = chem.orp.tank.units = '';
-                        schem.isActive = false;
-                        sys.chemControllers.removeItemById(id);
-                        state.chemControllers.removeItemById(id);
-                        resolve(chem);
-                    }
+        let out = Outbound.create({
+            action: 211,
+            response: Response.create({ protocol: Protocol.IntelliChem, action: 1, payload: [211] }),
+            retries: 3,
+            payload: [],
+            onComplete: (err) => {
+                if (err) { reject(err); }
+                else {
+                    let schem = state.chemControllers.getItemById(id);
+                    chem.isActive = false;
+                    chem.ph.tank.capacity = chem.orp.tank.capacity = 6;
+                    chem.ph.tank.units = chem.orp.tank.units = '';
+                    schem.isActive = false;
+                    sys.board.bodies.setBodyAsync(sys.bodies.getItemById(1, false))
+                        .then(()=>{
+                            sys.chemControllers.removeItemById(id);
+                            state.chemControllers.removeItemById(id);
+                            resolve(chem);
+                        })
+                        .catch(()=>{reject(err);});
                 }
-            });
-            // I think this payload should delete the controller on Touch.
-            out.insertPayloadBytes(0, 0, 22);
-            out.setPayloadByte(0, chem.address - 144);
-            out.setPayloadByte(1, Math.floor((chem.ph.setpoint * 100) / 256) || 0);
-            out.setPayloadByte(2, Math.round((chem.ph.setpoint * 100) % 256) || 0);
-            out.setPayloadByte(3, Math.floor(chem.orp.setpoint / 256) || 0);
-            out.setPayloadByte(4, Math.round(chem.orp.setpoint % 256) || 0);
-            out.setPayloadByte(5, 0);
-            out.setPayloadByte(6, 0);
-            out.setPayloadByte(7, Math.floor(chem.calciumHardness / 256) || 0);
-            out.setPayloadByte(8, Math.round(chem.calciumHardness % 256) || 0);
-            out.setPayloadByte(9, chem.cyanuricAcid || 0);
-            out.setPayloadByte(11, Math.floor(chem.alkalinity / 256) || 0);
-            out.setPayloadByte(12, Math.round(chem.alkalinity % 256) || 0);
-            out.setPayloadByte(13, 20);
-            conn.queueSendMessage(out);
+            }
         });
+        // I think this payload should delete the controller on Touch.
+        out.insertPayloadBytes(0, 0, 22);
+        out.setPayloadByte(0, chem.address - 144 || 0);
+        out.setPayloadByte(1, Math.floor((chem.ph.setpoint * 100) / 256) || 0);
+        out.setPayloadByte(2, Math.round((chem.ph.setpoint * 100) % 256) || 0);
+        out.setPayloadByte(3, Math.floor(chem.orp.setpoint / 256) || 0);
+        out.setPayloadByte(4, Math.round(chem.orp.setpoint % 256) || 0);
+        out.setPayloadByte(5, 0);
+        out.setPayloadByte(6, 0);
+        out.setPayloadByte(7, Math.floor(chem.calciumHardness / 256) || 0);
+        out.setPayloadByte(8, Math.round(chem.calciumHardness % 256) || 0);
+        out.setPayloadByte(9, chem.cyanuricAcid || 0);
+        out.setPayloadByte(11, Math.floor(chem.alkalinity / 256) || 0);
+        out.setPayloadByte(12, Math.round(chem.alkalinity % 256) || 0);
+        out.setPayloadByte(13, 20);
+        conn.queueSendMessage(out);
+    });
     }
-
 }

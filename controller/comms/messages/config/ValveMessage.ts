@@ -32,6 +32,7 @@ export class ValveMessage {
                         ValveMessage.processValveNames(msg);
                         break;
                     case 3: // Skip the secondary intake/return
+                        msg.isProcessed = true;
                         break;
                     case 4:
                     case 5:
@@ -70,6 +71,7 @@ export class ValveMessage {
         // [165,33,15,16,35,2],[132,0],[1,142]
         //                      ^^^ 128 = Pump off during valve operation
         sys.general.options.pumpDelay = msg.extractPayloadByte(0) >> 7 === 1;
+        msg.isProcessed = true;
     }
     private static process_ValveAssignment_IT(msg: Inbound) {
         // sample packet
@@ -91,6 +93,7 @@ export class ValveMessage {
                     let svalve = state.valves.getItemById(id, true);
                     svalve.name = valve.name;
                     svalve.type = valve.type;
+                    valve.master = 0;
                 }
                 else {
                     sys.valves.removeItemById(id);
@@ -110,6 +113,7 @@ export class ValveMessage {
                     let svalve = state.valves.getItemById(id, true);
                     svalve.name = valve.name;
                     svalve.type = valve.type;
+                    valve.master = 0;
                 }
                 else {
                     sys.valves.removeItemById(id);
@@ -127,7 +131,7 @@ export class ValveMessage {
                 // there is no circuit.  The circuitry for the valve always exists although I am not sure
                 // how the valve expansion is represented.
                 valve.isActive = true;
-                valve.isReturn = false; 
+                valve.isReturn = false;
                 valve.isIntake = false;
                 valve.type = 0;
                 // Allow users to name the valve whatever they want.  *Touch apparently only allows the valve to be named the same
@@ -136,17 +140,20 @@ export class ValveMessage {
                 let svalve = state.valves.getItemById(id, true);
                 svalve.name = valve.name;
                 svalve.type = valve.type;
+                valve.master = 0;
             }
             if (!valve.isActive) {
                 sys.valves.removeItemById(id);
                 state.valves.removeItemById(id);
             }
             else {
-                valve.isVirtual = false;
+                valve.master = 0;
+                // valve.isVirtual = false;
                 valve.type = 0;
             }
             id++;
         }
+        msg.isProcessed = true;
     }
     private static getName(id: number, cir: number) {
         if (cir <= 0 || cir >= 255 || cir === 6) {
@@ -167,7 +174,7 @@ export class ValveMessage {
         // for i10d.
         let ndx: number = 2;
         let id = 1;
-        for (let i = 0; i < sys.equipment.maxValves - 1; i++) {
+        for (let i = 0; i < sys.equipment.maxValves; i++) {
             if (id === 3 && !sys.equipment.shared) {
                 // The intake/return valves are skipped for non-shared systems.
                 sys.valves.removeItemById(3);
@@ -187,7 +194,8 @@ export class ValveMessage {
                 ndx += 2;
             }
             let valve: Valve = sys.valves.getItemById(id, true);
-            valve.isVirtual = false;
+            valve.master = 0;
+            // valve.isVirtual = false;
             if (id === 3 || id === 5) {
                 valve.circuit = 247; // Hardcode the intake/return to pool/spa;
                 valve.isIntake = true;
@@ -214,6 +222,7 @@ export class ValveMessage {
         }
         // Sort them so they are in valve id order.  This will ensure any OCP valves come first in the list.  Valves ids > 50 are virtual valves.
         sys.valves.sortById();
+        msg.isProcessed = true;
     }
     private static processValveNames(msg: Inbound) {
         let byte = msg.extractPayloadByte(1);
@@ -228,5 +237,6 @@ export class ValveMessage {
         if (typeof sys.valves.find(elem => elem.id === valveId) !== 'undefined') {
             state.valves.getItemById(valveId).name = sys.valves.getItemById(valveId++).name = msg.extractPayloadString(18, 16);
         }
+        msg.isProcessed = true;
     }
 }

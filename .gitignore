@@ -20,6 +20,7 @@ replay/
 config.json
 # data files
 data/
+backups/
 poolConfig.json
 poolState.json
 *.crt
@@ -36,3 +37,5 @@ bin/
 .vscode/
 # end
 
+/web/bindings/njsPCAux.json
+/web/bindings/njsPCMaster.json

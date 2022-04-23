@@ -34,7 +34,7 @@ export class NixieBodyCollection extends NixieEquipmentCollection<NixieBody> {
                 let body = bodies.getItemByIndex(i);
                 if (body.master === 1) {
                     if (typeof this.find(elem => elem.id === body.id) === 'undefined') {
-                        logger.info(`Initializing body ${body.name}`);
+                        logger.info(`Initializing Nixie body ${body.name}`);
                         let nbody = new NixieBody(this.controlPanel, body);
                         this.push(nbody);
                     }
@@ -64,6 +64,9 @@ export class NixieBody extends NixieEquipment {
         super(ncp);
         this.body = body;
         this.pollEquipmentAsync();
+        let bs = state.temps.bodies.getItemById(body.id);
+        bs.heaterCooldownDelay = false;
+        bs.heatStatus = 0;
     }
     public get id(): number { return typeof this.body !== 'undefined' ? this.body.id : -1; }
     public async setBodyAsync(data: any) {

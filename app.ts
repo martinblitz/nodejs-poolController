@@ -30,11 +30,12 @@ export async function initAsync() {
     try {
         await config.init();
         await logger.init();
-        await conn.init();
+        await conn.initAsync();
         await sys.init();
         await state.init();
         await webApp.init();
         await sys.start();
+        await webApp.initAutoBackup();
     } catch (err) { console.log(`Error Initializing nodejs-PoolController ${err.message}`);  }
     //return Promise.resolve()
     //    .then(function () { config.init(); })
@@ -70,6 +71,7 @@ export async function stopAsync(): Promise<void> {
     try {
         console.log('Shutting down open processes');
         // await sys.board.virtualPumpControllers.stopAsync();
+        await webApp.stopAutoBackup();
         await sys.stopAsync();
         await state.stopAsync();
         await conn.stopAsync();
@@ -96,6 +98,15 @@ else {
     process.stdin.resume();
     process.on('SIGINT', async function () {
         try { return await stopAsync(); } catch (err) { console.log(`Error shutting down processes ${err.message}`); }
+    });
+}
+if (typeof process === 'object') {
+    process.on('unhandledRejection', (error: Error, promise) => {
+        console.group('unhandled rejection');
+        console.error("== Node detected an unhandled rejection! ==");
+        console.error(error.message);
+        console.error(error.stack);
+        console.groupEnd();
     });
 }
 ( async () => { await initAsync() })();

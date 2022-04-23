@@ -36,43 +36,59 @@ export class PumpMessage {
         // packet 24/27/152/155 - Pump Config: IntelliTouch
         const pumpId = msg.extractPayloadByte(0);
         let type = msg.extractPayloadByte(1);  // Avoid setting this then setting it back if we are mapping to a different value.
+        let isActive = type !== 0 && pumpId <= sys.equipment.maxPumps;
         // RKS: 04-14-21 - Only create the pump if it is available.  If the pump was previously defined as another type
         // then it will be removed and recreated.
-        let pump: Pump = sys.pumps.getItemById(pumpId, pumpId <= sys.equipment.maxPumps && type !== 0);
-        if (pump.type !== type && type !== 0) {
-            sys.pumps.removeItemById(pumpId);
-            pump = sys.pumps.getItemById(pumpId, true);
-        }
-        pump.address = pumpId + 95;
-        switch (type) {
-            case 0: // none
-                pump.type = 0;
-                pump.isActive = false;
-                break;
-            case 64: // vsf
-                pump.type = type;
-                pump.isActive = true;
-                PumpMessage.processVSF_IT(msg);
-                break;
-            case 255: // vs 3050 on old panels.
-            case 128: // vs
-            case 134: // vs Ultra Efficiency
-                pump.type = 128;
-                pump.isActive = true;
-                PumpMessage.processVS_IT(msg);
-                break;
-            case 169: // vs+svrs
-                pump.type = 169;
-                pump.isActive = true;
-                PumpMessage.processVS_IT(msg);
-                break;
-            default: // vf - type is the background circuit
-                pump.type = 1; // force to type 1?
-                pump.isActive = true;
-                PumpMessage.processVF_IT(msg);
-                break;
-        }
-        if (pump.isActive) {
+        let pump: Pump = sys.pumps.getItemById(pumpId, isActive);
+        if(isActive) {
+            // Remap the combination pump types.
+            switch (type) {
+                case 0:
+                case 64:
+                case 169:
+                    break;
+                case 255:
+                case 128:
+                case 134:
+                    type = 128;
+                    break;
+                default:
+                    type = 1;
+                    break;
+            }
+            if (pump.type !== type) {
+                sys.pumps.removeItemById(pumpId);
+                pump = sys.pumps.getItemById(pumpId, isActive);
+            }
+            pump.address = pumpId + 95;
+            switch (type) {
+                case 0: // none
+                    pump.type = 0;
+                    pump.isActive = false;
+                    break;
+                case 64: // vsf
+                    pump.type = type;
+                    pump.isActive = true;
+                    PumpMessage.processVSF_IT(msg);
+                    break;
+                case 255: // vs 3050 on old panels.
+                case 128: // vs
+                case 134: // vs Ultra Efficiency
+                    pump.type = 128;
+                    pump.isActive = true;
+                    PumpMessage.processVS_IT(msg);
+                    break;
+                case 169: // vs+svrs
+                    pump.type = 169;
+                    pump.isActive = true;
+                    PumpMessage.processVS_IT(msg);
+                    break;
+                default: // vf - type is the background circuit
+                    pump.type = 1; // force to type 1?
+                    pump.isActive = true;
+                    PumpMessage.processVF_IT(msg);
+                    break;
+            }
             if (typeof pump.name === 'undefined') pump.name = sys.board.valueMaps.pumpTypes.get(pump.type).desc;
             const spump = state.pumps.getItemById(pump.id, true);
             spump.name = pump.name;
@@ -132,8 +148,10 @@ export class PumpMessage {
                 }
             }
         }
+        msg.isProcessed = true;
         switch (msgId) {
             case 0:
+                msg.isProcessed = true;
                 break;
             case 1:
                 PumpMessage.processFlowStepSize(msg);
@@ -347,38 +365,20 @@ export class PumpMessage {
                 circuit.circuit = _circuit;
                 circuit.flow = msg.extractPayloadByte(circuitId * 2 + 4);
                 circuit.units = 1;
-                switch (circuit.circuit) {
-                    case 1:
-                        {
-                            let body = sys.bodies.getItemById(2, sys.equipment.maxBodies >= 2);
-                            let sbody = state.temps.bodies.getItemById(2, sys.equipment.maxBodies >= 2);
-                            sbody.type = body.type = 1; // spa
-                            body.isActive = true;
-                            break;
-                        }
-                    case 6:
-                        {
-                            let body = sys.bodies.getItemById(1, sys.equipment.maxBodies >= 1);
-                            let sbody = state.temps.bodies.getItemById(1, sys.equipment.maxBodies >= 1);
-                            sbody.type = body.type = 0; // pool
-                            body.isActive = true;
-                            body.capacity = msg.extractPayloadByte(6) * 1000;
-                            break;
-                        }
-                }
             }
             else {
                 pump.circuits.removeItemById(_circuit);
             }
         }
         pump.backgroundCircuit = msg.extractPayloadByte(1);
+        pump.filterSize = msg.extractPayloadByte(2) * 1000;
         pump.turnovers = msg.extractPayloadByte(3);
+        pump.manualFilterGPM = msg.extractPayloadByte(21);
         pump.primingSpeed = msg.extractPayloadByte(22);
         pump.primingTime = (msg.extractPayloadByte(23) & 0xf);
         pump.minFlow = sys.board.valueMaps.pumpTypes.get(pump.type).minFlow;
         pump.maxFlow = sys.board.valueMaps.pumpTypes.get(pump.type).maxFlow;
         pump.flowStepSize = sys.board.valueMaps.pumpTypes.get(pump.type).flowStepSize;
-        pump.manualFilterGPM = msg.extractPayloadByte(21);
         pump.maxSystemTime = msg.extractPayloadByte(23) >> 4;
         pump.maxPressureIncrease = msg.extractPayloadByte(24);
         pump.backwashFlow = msg.extractPayloadByte(25);

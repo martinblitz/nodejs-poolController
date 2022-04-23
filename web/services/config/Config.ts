@@ -14,16 +14,21 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+import * as fs from "fs";
 import * as express from "express";
 import * as extend from 'extend';
+import * as multer from 'multer';
+import * as path from "path";
 import { sys, LightGroup, ControllerType, Pump, Valve, Body, General, Circuit, ICircuit, Feature, CircuitGroup, CustomNameCollection, Schedule, Chlorinator, Heater } from "../../../controller/Equipment";
 import { config } from "../../../config/Config";
 import { logger } from "../../../logger/Logger";
 import { utils } from "../../../controller/Constants";
+import { ServiceProcessError } from "../../../controller/Errors";
 import { state } from "../../../controller/State";
 import { stopPacketCaptureAsync, startPacketCapture } from '../../../app';
 import { conn } from "../../../controller/comms/Comms";
-import { webApp } from "../../Server";
+import { webApp, BackupFile, RestoreFile } from "../../Server";
+import { release } from "os";
 
 export class ConfigRoute {
     public static initRoutes(app: express.Application) {
@@ -52,16 +57,26 @@ export class ConfigRoute {
                 clockSources: sys.board.valueMaps.clockSources.toArray(),
                 clockModes: sys.board.valueMaps.clockModes.toArray(),
                 pool: sys.general.get(true),
-                sensors: sys.board.system.getSensors()
+                sensors: sys.board.system.getSensors(),
+                systemUnits: sys.board.valueMaps.systemUnits.toArray()
             };
             return res.status(200).send(opts);
         });
-        app.get('/config/options/rs485', (req, res) => {
-            let opts = {
-                port: config.getSection('controller.comms', { enabled: false, netConnect: false }),
-                stats: conn.buffer.counter
-            };
-            return res.status(200).send(opts);
+        app.get('/config/options/rs485', async (req, res, next) => {
+            try {
+                let opts = { ports: [], local: [] }
+                let cfg = config.getSection('controller');
+                for (let section in cfg) {
+                    if (section.startsWith('comms')) {
+                        let cport = extend(true, { enabled: false, netConnect: false }, cfg[section]);
+                        let port = conn.findPortById(cport.portId || 0);
+                        if (typeof port !== 'undefined') cport.stats = port.stats;
+                        opts.ports.push(cport);
+                    }
+                }
+                opts.local = await conn.getLocalPortsAsync() || [];
+                return res.status(200).send(opts);
+            } catch (err) { next(err); }
         });
         app.get('/config/options/circuits', async (req, res, next) => {
             try {
@@ -106,7 +121,7 @@ export class ConfigRoute {
                 invalidIds: sys.board.equipmentIds.invalidIds.get(),
                 equipmentIds: sys.equipment.equipmentIds.features,
                 equipmentNames: sys.board.circuits.getCircuitNames(),
-                functions: sys.board.valueMaps.featureFunctions.toArray(),
+                functions: sys.board.features.getFeatureFunctions(),
                 features: sys.features.get()
             };
             return res.status(200).send(opts);
@@ -115,7 +130,8 @@ export class ConfigRoute {
             let opts = {
                 maxBodies: sys.equipment.maxBodies,
                 bodyTypes: sys.board.valueMaps.bodies.toArray(),
-                bodies: sys.bodies.get()
+                bodies: sys.bodies.get(),
+                capacityUnits: sys.board.valueMaps.volumeUnits.toArray()
             };
             return res.status(200).send(opts);
         });
@@ -149,7 +165,8 @@ export class ConfigRoute {
                     circuits: sys.board.circuits.getCircuitReferences(true, true, true, true),
                     bodies: sys.board.valueMaps.pumpBodies.toArray(),
                     pumps: sys.pumps.get(),
-                    servers: await sys.ncp.getREMServers()
+                    servers: await sys.ncp.getREMServers(),
+                    rs485ports: await conn.listInstalledPorts()
                 };
                 // RKS: Why do we need the circuit names?  We have the circuits.  Is this so
                 // that we can name the pump.  I thought that *Touch uses the pump type as the name
@@ -196,7 +213,8 @@ export class ConfigRoute {
                     heaterTypes: sys.board.valueMaps.heaterTypes.toArray(),
                     heatModes: sys.board.valueMaps.heatModes.toArray(),
                     coolDownDelay: sys.general.options.cooldownDelay,
-                    servers: []
+                    servers: [],
+                    rs485ports: await conn.listInstalledPorts()
                 };
                 // We only need the servers data when the controller is a Nixie controller.  We don't need to
                 // wait for this information if we are dealing with an OCP.
@@ -239,6 +257,7 @@ export class ConfigRoute {
                     phSupplyTypes: sys.board.valueMaps.phSupplyTypes.toArray(),
                     volumeUnits: sys.board.valueMaps.volumeUnits.toArray(),
                     dosingMethods: sys.board.valueMaps.chemDosingMethods.toArray(),
+                    chlorDosingMethods: sys.board.valueMaps.chemChlorDosingMethods.toArray(),
                     orpProbeTypes: sys.board.valueMaps.chemORPProbeTypes.toArray(),
                     phProbeTypes: sys.board.valueMaps.chemPhProbeTypes.toArray(),
                     flowSensorTypes: sys.board.valueMaps.flowSensorTypes.toArray(),
@@ -275,14 +294,19 @@ export class ConfigRoute {
                 return res.status(200).send(opts);
             } catch (err) { next(err); }
         });
-        app.get('/config/options/chlorinators', (req, res) => {
-            let opts = {
-                types: sys.board.valueMaps.chlorinatorType.toArray(),
-                bodies: sys.board.bodies.getBodyAssociations(),
-                chlorinators: sys.chlorinators.get(),
-                maxChlorinators: sys.equipment.maxChlorinators
-            };
-            return res.status(200).send(opts);
+        app.get('/config/options/chlorinators', async (req, res, next) => {
+            try {
+                let opts = {
+                    types: sys.board.valueMaps.chlorinatorType.toArray(),
+                    bodies: sys.board.bodies.getBodyAssociations(),
+                    chlorinators: sys.chlorinators.get(),
+                    maxChlorinators: sys.equipment.maxChlorinators,
+                    models: sys.board.valueMaps.chlorinatorModel.toArray(),
+                    equipmentMasters: sys.board.valueMaps.equipmentMaster.toArray(),
+                    rs485ports: await conn.listInstalledPorts()
+                };
+                return res.status(200).send(opts);
+            } catch (err) { next(err); }
         });
         app.get('/config/options/dateTime', (req, res) => {
             let opts = {
@@ -305,13 +329,16 @@ export class ConfigRoute {
             let opts = {
                 interfaces: config.getSection('web.interfaces'),
                 types: [
-                    {name: 'rem', desc: 'Relay Equipment Manager'},
-                    {name: 'mqtt', desc: 'MQTT'}
+                    { name: 'rest', desc: 'Rest' },
+                    { name: 'http', desc: 'Http' },
+                    { name: 'rem', desc: 'Relay Equipment Manager' },
+                    { name: 'mqtt', desc: 'MQTT' },
+                    { name: 'influx', desc: 'InfluxDB' }
                 ],
                 protocols: [
                     { val: 0, name: 'http://', desc: 'http://' },
                     { val: 1, name: 'https://', desc: 'https://' },
-                    { val: 2, name: 'mqtt://', desc: 'mqtt://' },
+                    { val: 2, name: 'mqtt://', desc: 'mqtt://' }
                 ]
             }
             return res.status(200).send(opts);
@@ -330,6 +357,8 @@ export class ConfigRoute {
                     bodies: sys.board.bodies.getBodyAssociations(),
                     filters: sys.filters.get(),
                     areaUnits: sys.board.valueMaps.areaUnits.toArray(),
+                    pressureUnits: sys.board.valueMaps.pressureUnits.toArray(),
+                    circuits: sys.board.circuits.getCircuitReferences(true, true, true, false),
                     servers: []
                 };
                 if (sys.controllerType === ControllerType.Nixie) opts.servers = await sys.ncp.getREMServers();
@@ -338,14 +367,14 @@ export class ConfigRoute {
         });
         /******* END OF CONFIGURATION PICK LISTS/REFERENCES AND VALIDATION ***********/
         /******* ENDPOINTS FOR MODIFYING THE OUTDOOR CONTROL PANEL SETTINGS **********/
-        app.put('/config/rem', async (req, res, next)=>{
+        app.put('/config/rem', async (req, res, next) => {
             try {
                 // RSG: this is problematic because we now enable multiple rem type interfaces that may not be called REM. 
                 // This is now also a dupe of PUT /app/interface and should be consolidated
                 // config.setSection('web.interfaces.rem', req.body);
                 config.setInterface(req.body);
             }
-            catch (err) {next(err);}
+            catch (err) { next(err); }
         })
         app.put('/config/tempSensors', async (req, res, next) => {
             try {
@@ -360,7 +389,7 @@ export class ConfigRoute {
         });
         app.put('/config/filter', async (req, res, next) => {
             try {
-                let sfilter = sys.board.filters.setFilter(req.body);
+                let sfilter = await sys.board.filters.setFilterAsync(req.body);
                 return res.status(200).send(sfilter.get(true));
             }
             catch (err) { next(err); }
@@ -373,7 +402,7 @@ export class ConfigRoute {
         });
         app.delete('/config/filter', async (req, res, next) => {
             try {
-                let sfilter = sys.board.filters.deleteFilter(req.body);
+                let sfilter = await sys.board.filters.deleteFilterAsync(req.body);
                 return res.status(200).send(sfilter.get(true));
             }
             catch (err) { next(err); }
@@ -577,8 +606,8 @@ export class ConfigRoute {
             return res.status(200).send(circuitFunctions);
         });
         app.get('/config/features/functions', (req, res) => {
-            let circuitFunctions = sys.board.circuits.getCircuitFunctions();
-            return res.status(200).send(circuitFunctions);
+            let featureFunctions = sys.board.features.getFeatureFunctions();
+            return res.status(200).send(featureFunctions);
         });
         app.get('/config/circuit/:id', (req, res) => {
             // todo: need getInterfaceById.get() in case features are requested here
@@ -587,18 +616,18 @@ export class ConfigRoute {
         });
         app.get('/config/circuit/:id/lightThemes', (req, res) => {
             let circuit = sys.circuits.getInterfaceById(parseInt(req.params.id, 10));
-            let themes = typeof circuit !== 'undefined' && typeof circuit.getLightThemes === 'function' ? circuit.getLightThemes() : [];
+            let themes = typeof circuit !== 'undefined' && typeof circuit.getLightThemes === 'function' ? circuit.getLightThemes(circuit.type) : [];
             return res.status(200).send(themes);
         });
+        app.get('/config/circuit/:id/lightCommands', (req, res) => {
+            let circuit = sys.circuits.getInterfaceById(parseInt(req.params.id, 10));
+            let commands = typeof circuit !== 'undefined' && typeof circuit.getLightThemes === 'function' ? circuit.getLightCommands(circuit.type) : [];
+            return res.status(200).send(commands);
+        });
+
         app.get('/config/chlorinator/:id', (req, res) => {
             return res.status(200).send(sys.chlorinators.getItemById(parseInt(req.params.id, 10)).get());
         });
-        //app.put('/config/chlorinator', (req, res) => {
-        //    let chlor = sys.chlorinators.getItemById(parseInt(req.body.id, 10), true);
-        //    sys.board.chlorinator.setChlorProps(chlor, req.body);
-        //    // if (chlor.isVirtual) { sys.board.virtualChlorinatorController.start(); }
-        //    return res.status(200).send(sys.chlorinators.getItemById(parseInt(req.params.id, 10)).get());
-        //});
         app.get('/config/chlorinators/search', async (req, res, next) => {
             // Change the options for the pool.
             try {
@@ -609,103 +638,6 @@ export class ConfigRoute {
                 next(err);
             }
         });
-        /*         app.get('/config/pump/:id/circuits', (req, res) => {
-                    return res.status(200).send(sys.pumps.getItemById(parseInt(req.params.id, 10)).get().circuits);
-                });
-                app.get('/config/pump/availableCircuits', (req, res) => {
-                    return res.status(200).send(sys.board.pumps.availableCircuits());
-                });
-                app.get('/config/pump/:id/circuit/:circuitid', (req, res) => {
-                    return res.status(200).send(sys.pumps.getItemById(parseInt(req.params.id, 10)).get().circuits[parseInt(req.params.circuitid, 10)]);
-                });
-                app.get('/config/pump/:id/nextAvailablePumpCircuit', (req, res) => {
-                    // if no pumpCircuitId is available, 0 will be returned
-                    let _id = sys.pumps.getItemById(parseInt(req.params.id, 10)).nextAvailablePumpCircuit();
-                    return res.status(200).send(_id.toString());
-                }); */
-        /*
-        app.put('/config/pump/:id/pumpCircuit', (req, res) => {
-            // if no pumpCircuitId is specified, set it as 0 and take the next available one
-            req.url = `${ req.url }/0`;
-            req.next();
-        });
-         app.put('/config/pump/:id/pumpCircuit/:pumpCircuitId', (req, res) => {
-            // RSG - do we want a /config/pump/:id/pumpCircuit/ that will just assume the next circuit?
-            let pump = sys.pumps.getItemById(parseInt(req.params.id, 10));
-            let _pumpCircuitId = parseInt(req.params.pumpCircuitId, 10);
-            let _circuit = parseInt(req.body.circuit, 10);
-            let _rate = parseInt(req.body.rate, 10);
-            let _units = parseInt(req.body.units, 10) || pump.defaultUnits;
-            let pumpCircuit = {
-                pump: parseInt(req.params.id, 10),
-                pumpCircuitId: isNaN(_pumpCircuitId) ? undefined : _pumpCircuitId,
-                circuit: isNaN(_circuit) ? undefined : _circuit,
-                rate: isNaN(_rate) ? undefined : _rate,
-                units: isNaN(_units) ? undefined : _units
-            };
-            let { result, reason } = pump.setPumpCircuit(pumpCircuit);
-            if (result === 'OK')
-                return res.status(200).send({ result: result, reason: reason });
-            else
-                return res.status(500).send({ result: result, reason: reason });
-        }); */
-        /*         app.delete('/config/pump/:id/pumpCircuit/:pumpCircuitId', (req, res) => {
-                    let pump = sys.pumps.getItemById(parseInt(req.params.id, 10));
-                    // pump.circuits.removeItemById(parseInt(req.params.pumpCircuitId, 10));
-                    pump.deletePumpCircuit(parseInt(req.params.pumpCircuitId, 10));
-                    return res.status(200).send('OK');
-                }); */
-        /*         app.get('/config/pump/types', (req, res) => {
-                    let pumpTypes = sys.board.pumps.getPumpTypes();
-                    return res.status(200).send(pumpTypes);
-                });
-                app.get('/config/pump/units', (req, res) => {
-                    // get all units for all system board
-                    let pumpTypes = sys.board.pumps.getCircuitUnits();
-                    return res.status(200).send(pumpTypes);
-                });
-                app.get('/config/pump/:id/units', (req, res) => {
-                    // get units for all specific pump types
-                    // need to coorerce into array if only a single unit is returned; by default getExtended will return an array
-                    // if there is 1+ object so this creates parity
-                    let pump = sys.pumps.getItemById(parseInt(req.params.id, 10));
-                    let pumpTypes = sys.board.pumps.getCircuitUnits(pump);
-                    if (!Array.isArray(pumpTypes)) pumpTypes = [pumpTypes];
-                    return res.status(200).send(pumpTypes);
-                });
-                app.put('/config/pump/:pumpId/type', (req, res) => {
-                    const _type = parseInt(req.body.pumpType, 10);
-                    const _pumpId = parseInt(req.params.pumpId, 10);
-                    // RG - this was left as it's own end point because trying to combine changing the pump type (which requires resetting the pump values) while simultaneously setting new pump values was tricky. 
-                    let pump = sys.pumps.getItemById(_pumpId);
-                    if (sys.controllerType === ControllerType.Virtual) {
-                        pump.isVirtual = true;
-                    }
-                    if (_type !== pump.type) {
-                        pump.setType(_type);
-                    }
-                    return res.status(200).send('OK');
-                }); */
-        /*       app.get('/config/pump/:pumpId', (req, res) => {
-                  let pump = sys.pumps.getItemById(parseInt(req.params.pumpId, 10)).get(true);
-                  return res.status(200).send(pump);
-              });
-              app.put('/config/pump/:pumpId', (req, res) => {
-                  // this will change the pump type
-                  let _type = parseInt(req.body.pumpType, 10);
-                  let pump = sys.pumps.getItemById(parseInt(req.params.pumpId, 10));
-                  if (sys.controllerType === ControllerType.Virtual) {
-                      // if virtualController, add the virtual pump
-                      pump.isVirtual = true;
-                  }
-      
-                  if (_type !== pump.type && typeof _type !== 'undefined') {
-                      pump.setType(_type);
-                  }
-                  // get a new instance of the pump here because setType will remove/add a new instance
-                  if (Object.keys(req.body).length) sys.pumps.getItemById(parseInt(req.params.pumpId, 10)).setPump(req.body);
-                  return res.status(200).send('OK');
-              }); */
         app.delete('/config/pump/:pumpId', (req, res) => {
             let pump = sys.pumps.getItemById(parseInt(req.params.pumpId, 10));
             if (pump.type === 0) {
@@ -723,13 +655,12 @@ export class ConfigRoute {
         });
         app.get('/config/lightGroups/themes', (req, res) => {
             // RSG: is this and /config/circuit/:id/lightThemes both needed?
-
-            // if (sys.controllerType === ControllerType.IntelliCenter) {
-            let grp = sys.lightGroups.getItemById(parseInt(req.params.id, 10));
+            let grp = sys.lightGroups.getItemById(parseInt(req.body.id, 10));
             return res.status(200).send(grp.getLightThemes());
-            // }
-            // else
-            //     return res.status(200).send(sys.intellibrite.getLightThemes());
+        });
+        app.get('/config/lightGroups/commands', (req, res) => {
+            let grp = sys.lightGroups.getItemById(parseInt(req.body.id, 10));
+            return res.status(200).send(grp.getLightCommands());
         });
         app.get('/config/lightGroup/:id', (req, res) => {
             // if (sys.controllerType === ControllerType.IntelliCenter) {
@@ -758,16 +689,16 @@ export class ConfigRoute {
             let grp = sys.circuitGroups.getItemById(parseInt(req.params.id, 10));
             return res.status(200).send(grp.getExtended());
         });
-/*         app.get('/config/chemController/search', async (req, res, next) => {
-            // Change the options for the pool.
-            try {
-                let result = await sys.board.virtualChemControllers.search();
-                return res.status(200).send(result);
-            }
-            catch (err) {
-                next(err);
-            }
-        }); */
+        /*         app.get('/config/chemController/search', async (req, res, next) => {
+                    // Change the options for the pool.
+                    try {
+                        let result = await sys.board.virtualChemControllers.search();
+                        return res.status(200).send(result);
+                    }
+                    catch (err) {
+                        next(err);
+                    }
+                }); */
         app.put('/config/chemController', async (req, res, next) => {
             try {
                 let chem = await sys.board.chemControllers.setChemControllerAsync(req.body);
@@ -790,17 +721,17 @@ export class ConfigRoute {
             catch (err) { next(err); }
 
         });
-/*         app.get('/config/intellibrite', (req, res) => {
-            return res.status(200).send(sys.intellibrite.getExtended());
-        });
-        app.get('/config/intellibrite/colors', (req, res) => {
-            return res.status(200).send(sys.board.valueMaps.lightColors.toArray());
-        });
-        app.put('/config/intellibrite/setColors', (req, res) => {
-            let grp = extend(true, { id: 0 }, req.body);
-            sys.board.circuits.setIntelliBriteColors(new LightGroup(grp));
-            return res.status(200).send('OK');
-        }); */
+        /*         app.get('/config/intellibrite', (req, res) => {
+                    return res.status(200).send(sys.intellibrite.getExtended());
+                });
+                app.get('/config/intellibrite/colors', (req, res) => {
+                    return res.status(200).send(sys.board.valueMaps.lightColors.toArray());
+                });
+                app.put('/config/intellibrite/setColors', (req, res) => {
+                    let grp = extend(true, { id: 0 }, req.body);
+                    sys.board.circuits.setIntelliBriteColors(new LightGroup(grp));
+                    return res.status(200).send('OK');
+                }); */
         app.get('/config', (req, res) => {
             return res.status(200).send(sys.getSection('all'));
         });
@@ -826,15 +757,22 @@ export class ConfigRoute {
             return res.status(200).send('OK');
         });
         app.put('/app/interface', async (req, res, next) => {
-           try{
-            await webApp.updateServerInterface(req.body);
-            return res.status(200).send('OK');
-        }
-        catch (err) {next(err);}
+            try {
+                let iface = await webApp.updateServerInterface(req.body);
+                return res.status(200).send(iface);
+            }
+            catch (err) { next(err); }
         });
         app.put('/app/rs485Port', async (req, res, next) => {
             try {
                 let port = await conn.setPortAsync(req.body);
+                return res.status(200).send(port);
+            }
+            catch (err) { next(err); }
+        });
+        app.delete('/app/rs485Port', async (req, res, next) => {
+            try {
+                let port = await conn.deleteAuxPort(req.body);
                 return res.status(200).send(port);
             }
             catch (err) { next(err); }
@@ -847,15 +785,129 @@ export class ConfigRoute {
             startPacketCapture(false);
             return res.status(200).send('OK');
         });
-        app.get('/app/config/stopPacketCapture', async (req, res,next) => {
+        app.get('/app/config/stopPacketCapture', async (req, res, next) => {
             try {
                 let file = await stopPacketCaptureAsync();
                 res.download(file);
             }
-            catch (err) {next(err);}
+            catch (err) { next(err); }
         });
         app.get('/app/config/:section', (req, res) => {
             return res.status(200).send(config.getSection(req.params.section));
+        });
+        app.get('/app/config/options/backup', async (req, res, next) => {
+            try {
+                let opts = config.getSection('controller.backups', { automatic: false, interval: { days: 30, hours: 0 }, keepCount: 5, servers: [] });
+                let servers = await sys.ncp.getREMServers();
+                if (typeof servers !== 'undefined') {
+                    // Just in case somebody deletes the backup section and doesn't put it back properly.
+                    for (let i = 0; i < servers.length; i++) {
+                        let srv = servers[i];
+                        if (typeof opts.servers.find(elem => elem.uuid === srv.uuid) === 'undefined') opts.servers.push({ name: srv.name, uuid: srv.uuid, backup: false, host: srv.interface.options.host });
+                    }
+                    for (let i = opts.servers.length - 1; i >= 0; i--) {
+                        let srv = opts.servers[i];
+                        if (typeof servers.find(elem => elem.uuid === srv.uuid) === 'undefined') opts.servers.splice(i, 1);
+                    }
+                }
+                if (typeof opts.servers === 'undefined') opts.servers = [];
+                return res.status(200).send(opts);
+            } catch (err) { next(err); }
+        });
+        app.get('/app/config/options/restore', async (req, res, next) => {
+            try {
+                let opts = config.getSection('controller.backups', { automatic: false, interval: { days: 30, hours: 0 }, keepCount: 5, servers: [], backupFiles: [] });
+                let servers = await sys.ncp.getREMServers();
+                if (typeof servers !== 'undefined') {
+                    for (let i = 0; i < servers.length; i++) {
+                        let srv = servers[i];
+                        if (typeof opts.servers.find(elem => elem.uuid === srv.uuid) === 'undefined') opts.servers.push({ name: srv.name, uuid: srv.uuid, backup: false });
+                    }
+                    for (let i = opts.servers.length - 1; i >= 0; i--) {
+                        let srv = opts.servers[i];
+                        if (typeof servers.find(elem => elem.uuid === srv.uuid) === 'undefined') opts.servers.splice(i, 1);
+                    }
+                }
+                if (typeof opts.servers === 'undefined') opts.servers = [];
+                opts.backupFiles = await webApp.readBackupFiles();
+                return res.status(200).send(opts);
+            } catch (err) { next(err); }
+
+        });
+        app.put('/app/config/options/backup', async (req, res, next) => {
+            try {
+                config.setSection('controller.backups', req.body);
+                let opts = config.getSection('controller.backups', { automatic: false, interval: { days: 30, hours: 0 }, keepCount: 5, servers: [] });
+                webApp.autoBackup = utils.makeBool(opts.automatic);
+                await webApp.checkAutoBackup();
+                return res.status(200).send(opts);
+            } catch (err) { next(err); }
+
+        });
+        app.put('/app/config/createBackup', async (req, res, next) => {
+            try {
+                let ret = await webApp.backupServer(req.body);
+                res.download(ret.filePath);
+            }
+            catch (err) { next(err); }
+        });
+        app.delete('/app/backup/file', async (req, res, next) => {
+            try {
+                let opts = req.body;
+                fs.unlinkSync(opts.filePath);
+                return res.status(200).send(opts);
+            }
+            catch (err) { next(err); }
+        });
+        app.post('/app/backup/file', async (req, res, next) => {
+            try {
+                let file = multer({
+                    limits: { fileSize: 1000000  },
+                    storage: multer.memoryStorage()
+                }).single('backupFile');
+                file(req, res, async (err) => {
+                    try {
+                        if (err) { next(err); }
+                        else {
+                            // Validate the incoming data and save it off only if it is valid.
+                            let bf = await BackupFile.fromBuffer(req.file.originalname, req.file.buffer);
+                            if (typeof bf === 'undefined') {
+                                err = new ServiceProcessError(`Invalid backup file: ${req.file.originalname}`, 'POST: app/backup/file', 'extractBackupOptions');
+                                next(err);
+                            }
+                            else {
+                                if (fs.existsSync(bf.filePath))
+                                    return next(new ServiceProcessError(`File already exists ${req.file.originalname}`, 'POST: app/backup/file', 'writeFile'));
+                                else {
+                                    try {
+                                        fs.writeFileSync(bf.filePath, req.file.buffer);
+                                    } catch (e) { logger.error(`Error writing backup file ${e.message}`); }
+                                }
+                                return res.status(200).send(bf);
+                            }
+                        }
+                    } catch (e) {
+                        err = new ServiceProcessError(`Error uploading file: ${e.message}`, 'POST: app/backup/file', 'uploadFile');
+                        next(err);
+                        logger.error(e);
+                    }
+                });
+            } catch (err) { next(err); }
+        });
+        app.put('/app/restore/validate', async (req, res, next) => {
+            try {
+                // Validate all the restore options.
+                let opts = req.body;
+                let ctx = await webApp.validateRestore(opts);
+                return res.status(200).send(ctx);
+            } catch (err) { next(err); }
+        });
+        app.put('/app/restore/file', async (req, res, next) => {
+            try {
+                let opts = req.body;
+                let results = await webApp.restoreServers(opts);
+                return res.status(200).send(results);
+            } catch (err) { next(err); }
         });
     }
 }

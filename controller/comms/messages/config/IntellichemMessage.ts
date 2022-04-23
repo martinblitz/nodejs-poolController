@@ -138,7 +138,8 @@ export class IntellichemMessage {
                         let controller = sys.chemControllers.getItemById(id, isActive, { id: i + 1, type: 1 });
                         let scontroller = state.chemControllers.getItemById(controller.id, isActive);
                         scontroller.isActive = controller.isActive = true;
-                        controller.isVirtual = false;
+                        // controller.isVirtual = false;
+                        controller.master = 0;
                         if (!controller.isActive) {
                             sys.chemControllers.removeItemById(controller.id);
                             state.chemControllers.removeItemById(controller.id);
@@ -163,6 +164,7 @@ export class IntellichemMessage {
                         }
                     }
                 }
+                msg.isProcessed = true;
                 break;
             case 1:
                 for (let i = 0; i < 4; i++) {
@@ -175,6 +177,7 @@ export class IntellichemMessage {
                         controller.alkalinity = msg.extractPayloadInt((i * 2) + 26);
                     }
                 }
+                msg.isProcessed = true;
                 break;
         }
     }

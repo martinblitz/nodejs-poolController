@@ -8,7 +8,7 @@ import { CircuitState, PumpState, state, } from "../../State";
 import { setTimeout, clearTimeout } from 'timers';
 import { NixieControlPanel } from '../Nixie';
 import { webApp, InterfaceServerResponse } from "../../../web/Server";
-import { Outbound, Protocol } from '../../comms/messages/Messages';
+import { Outbound, Protocol, Response } from '../../comms/messages/Messages';
 import { conn } from '../../comms/Comms';
 
 export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
@@ -117,6 +117,10 @@ export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
                 return new NixiePumpSF(this.controlPanel, pump);
             case 'vs':
                 return new NixiePumpVS(this.controlPanel, pump);
+            case 'hwvs':
+                return new NixiePumpHWVS(this.controlPanel, pump);
+            case 'hwrly':
+                return new NixiePumpHWRLY(this.controlPanel, pump);
             default:
                 throw new EquipmentNotFoundError(`NCP: Cannot create pump ${pump.name}.`, type);
         }
@@ -180,13 +184,34 @@ export class NixiePump extends NixieEquipment {
             if (typeof type.maxCircuits !== 'undefined' && type.maxCircuits > 0 && typeof data.circuits !== 'undefined') { // This pump type supports circuits
                 for (let i = 1; i <= data.circuits.length && i <= type.maxCircuits; i++) {
                     let c = data.circuits[i - 1];
+                    let circuit = parseInt(c.circuit, 10);
+                    let cd = this.pump.circuits.find(elem => elem.circuit === circuit);
                     let speed = parseInt(c.speed, 10);
                     let relay = parseInt(c.relay, 10);
                     let flow = parseInt(c.flow, 10);
+                    let units = typeof c.units !== 'undefined' ? sys.board.valueMaps.pumpUnits.encode(c.units) : undefined;
+                    switch (type.name) {
+                        case 'vf':
+                            units = sys.board.valueMaps.pumpUnits.getValue('gpm');
+                            break;
+                        case 'hwvs':
+                        case 'vssvrs':
+                        case 'vs':
+                            c.units = sys.board.valueMaps.pumpUnits.getValue('rpm');
+                            break;
+                        case 'ss':
+                        case 'ds':
+                        case 'sf':
+                        case 'hwrly':
+                            c.units = 'undefined';
+                            break;
+                    }
+                    if (isNaN(units)) units = typeof cd !== 'undefined' ? cd.units : sys.board.valueMaps.pumpUnits.getValue('rpm');
                     if (isNaN(speed)) speed = type.minSpeed;
                     if (isNaN(flow)) flow = type.minFlow;
                     if (isNaN(relay)) relay = 1;
-                    c.units = parseInt(c.units, 10) || type.name === 'vf' ? sys.board.valueMaps.pumpUnits.getValue('gpm') : sys.board.valueMaps.pumpUnits.getValue('rpm');
+                    c.units = units;
+                    //c.units = parseInt(c.units, 10) || type.name === 'vf' ? sys.board.valueMaps.pumpUnits.getValue('gpm') : sys.board.valueMaps.pumpUnits.getValue('rpm');
                     if (typeof type.minSpeed !== 'undefined' && c.units === sys.board.valueMaps.pumpUnits.getValue('rpm')) {
                         c.speed = speed;
                     }
@@ -215,8 +240,8 @@ export class NixiePump extends NixieEquipment {
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
             // let success = false;
-            this.setTargetSpeed();
             let pstate = state.pumps.getItemById(this.pump.id);
+            this.setTargetSpeed(pstate);
             await this.setPumpStateAsync(pstate);
         }
         catch (err) { logger.error(`Nixie Error running pump sequence - ${err}`); }
@@ -239,7 +264,10 @@ export class NixiePump extends NixieEquipment {
             this._pollTimer = null;
             this._targetSpeed = 0;
             let pstate = state.pumps.getItemById(this.pump.id);
-            await this.setPumpStateAsync(pstate);
+            try {
+                await this.setPumpStateAsync(pstate);
+                // Since we are closing we need to not reject.
+            } catch (err) { logger.error(`Nixie Closing pump closeAsync: ${err.message}`); }
             // This will make sure the timer is dead and we are completely closed.
             this.closing = true;
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
@@ -248,19 +276,43 @@ export class NixiePump extends NixieEquipment {
         catch (err) { logger.error(`Nixie Pump closeAsync: ${err.message}`); return Promise.reject(err); }
     }
     public logData(filename: string, data: any) { this.controlPanel.logData(filename, data); }
-    protected setTargetSpeed() { };
+    protected setTargetSpeed(pstate: PumpState) { };
+    protected isBodyOn(bodyCode: number) {
+        let assoc = sys.board.valueMaps.pumpBodies.transform(bodyCode);
+        switch (assoc.name) {
+            case 'body1':
+            case 'pool':
+                return state.temps.bodies.getItemById(1).isOn;
+            case 'body2':
+            case 'spa':
+                return state.temps.bodies.getItemById(2).isOn;
+            case 'body3':
+                return state.temps.bodies.getItemById(3).isOn;
+            case 'body4':
+                return state.temps.bodies.getItemById(4).isOn;
+            case 'poolspa':
+                if (sys.equipment.shared && sys.equipment.maxBodies >= 2) {
+                    return state.temps.bodies.getItemById(1).isOn === true || state.temps.bodies.getItemById(2).isOn === true;
+                }
+                else
+                    return state.temps.bodies.getItemById(1).isOn;
+        }
+        return false;
+    }
 }
 export class NixiePumpSS extends NixiePump {
-    public setTargetSpeed() {
+    public setTargetSpeed(pState: PumpState) {
         // Turn on ss pumps.
         let _newSpeed = 0;
-        let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
-        if (pt.hasBody) _newSpeed = sys.board.bodies.isBodyOn(this.pump.body) ? 1 : 0;
-        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed > 0 ? 'on' : 'off'}.`);
+        if (!pState.pumpOnDelay) {
+            let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
+            if (pt.hasBody) _newSpeed = this.isBodyOn(this.pump.body) ? 1 : 0;
+            //console.log(`BODY: ${sys.board.bodies.isBodyOn(this.pump.body)} CODE: ${this.pump.body}`);
+        }
+        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed > 0 ? 'on' : 'off'}. ${sys.board.bodies.isBodyOn(this.pump.body)}`);
         if (isNaN(_newSpeed)) _newSpeed = 0;
         this._targetSpeed = _newSpeed;
     }
-
     public async setPumpStateAsync(pstate: PumpState) {
         let relays: PumpRelay[] = this.pump.relays.get();
         let relayState = 0;
@@ -301,16 +353,20 @@ export class NixiePumpSS extends NixiePump {
     }
 }
 export class NixiePumpDS extends NixiePumpSS {
-    public setTargetSpeed() {
+    public setTargetSpeed(pState: PumpState) {
         // Turn on sf pumps.  The new speed will be the relays associated with the pump.  I believe when this comes out in the final
         // wash it should engage all the relays for all speeds associated with the pump.  The pump logic will determine which program is
         // the one to engage.
         let _newSpeed = 0;
-        let pumpCircuits: PumpCircuit[] = this.pump.circuits.get();
-        for (let i = 0; i < pumpCircuits.length; i++) {
-            let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
-            // relay speeds are bit-shifted 'or' based on 1,2,4,8
-            if (circ.isOn) _newSpeed |= (1 << pumpCircuits[i].relay - 1);
+        if (!pState.pumpOnDelay) {
+            let pumpCircuits: PumpCircuit[] = this.pump.circuits.get();
+            if (!pState.pumpOnDelay) {
+                for (let i = 0; i < pumpCircuits.length; i++) {
+                    let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
+                    // relay speeds are bit-shifted 'or' based on 1,2,4,8
+                    if (circ.isOn) _newSpeed |= (1 << pumpCircuits[i].relay - 1);
+                }
+            }
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
         this.logSpeed(_newSpeed);
@@ -327,6 +383,100 @@ export class NixiePumpSF extends NixiePumpDS {
         if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} relays to Relay 1: ${_newSpeed & 1 ? 'on' : 'off'}, Relay 2: ${_newSpeed & 2 ? 'on' : 'off'}, Relay 3: ${_newSpeed & 4 ? 'on' : 'off'}, and Relay 4: ${_newSpeed & 8 ? 'on' : 'off'}.`);
     }
 }
+export class NixiePumpHWRLY extends NixiePumpDS {
+    // This operates as a relay pump with up to 8 speeds.  The speeds are defined as follows.  The override
+    // relay should be defined as being normally closed.  When it opens then the pump will turn on to the speed.
+    // +-------+---------+---------+---------+---------+
+    // + Speed | Relay 1 | Relay 2 | Relay 3 |  OVRD   |
+    // +-------+---------+---------+---------+---------+
+    // |  OFF  |   OFF   |   OFF   |   OFF   |   OFF   |
+    // +-------+---------+---------+---------+---------+
+    // |   1   |   OFF   |   OFF   |   OFF   |   ON    |
+    // +-------+---------+---------+---------+---------+
+    // |   2   |   ON    |   OFF   |   OFF   |   ON    |
+    // +-------+---------+---------+---------+---------+
+    // |   3   |   OFF   |   ON    |   OFF   |   ON    |
+    // +-------+---------+---------+---------+---------+
+    // |   4   |   ON    |   ON    |   OFF   |   ON    |
+    // +-------+---------+---------+---------+---------+
+    // |   5   |   OFF   |   OFF   |   ON    |   ON    |
+    // +-------+---------+---------+---------+---------+
+    // |   6   |   ON    |   OFF   |   ON    |   ON    |
+    // +-------+---------+---------+---------+---------+
+    // |   7   |   OFF   |   ON    |   ON    |   ON    |
+    // +-------+---------+---------+---------+---------+
+    // |   8   |   ON    |   ON    |   ON    |   ON    |
+    // +-------+---------+---------+---------+---------+
+
+    public setTargetSpeed(pState: PumpState) {
+        let _newSpeed = 0;
+        if (!pState.pumpOnDelay) {
+            let pumpCircuits = this.pump.circuits.get();
+            for (let i = 0; i < pumpCircuits.length; i++) {
+                let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
+                let pc = pumpCircuits[i];
+                if (circ.isOn) {
+                    _newSpeed = Math.max(_newSpeed, pc.relay);
+                }
+            }
+        }
+        if (isNaN(_newSpeed)) _newSpeed = 0;
+        this._targetSpeed = _newSpeed;
+        if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minSpeed, this._targetSpeed), this.pump.maxSpeed);
+        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed}.`);
+    }
+    public async setPumpStateAsync(pstate: PumpState) {
+        // Don't poll while we are seting the state.
+        this.suspendPolling = true;
+        try {
+            let relays: PumpRelay[] = this.pump.relays.get();
+            let relayState = 0;
+            let targetState = 0;
+            for (let i = 0; i < relays.length; i++) {
+                let pr = relays[i];
+                if (typeof pr.id === 'undefined') pr.id = i + 1; // remove when id is added to dP relays upon save.
+                // If we are turning on the pump relay #4 needs to be on.  NOTE: It is expected that the OVRD relay is hooked up in a normally closed
+                // configuration so that whenever the pump is off the relay terminals are closed.
+                let isOn = this._targetSpeed > 0 ? i === 3 ? true : (this._targetSpeed - 1 & (1 << i)) > 0 : false;
+                let bit = isOn ? (1 << i) : 0;
+                targetState |= bit;
+                if (utils.isNullOrEmpty(pr.connectionId) || utils.isNullOrEmpty(pr.deviceBinding)) {
+                    // Determine whether the relay should be on.
+                    relayState |= bit;
+                }
+                else {
+                    try {
+                        let res = await NixieEquipment.putDeviceService(pr.connectionId, `/state/device/${pr.deviceBinding}`, { isOn, latch: isOn ? 5000 : undefined });
+                        if (res.status.code === 200) {
+                            relayState |= bit;
+                        }
+                        else pstate.status = 16;
+                    }
+                    catch (err) {
+                        logger.error(`NCP: Error setting pump ${this.pump.name} relay ${pr.id} to ${isOn ? 'on' : 'off'}.  Error ${err.message}}`);
+                        pstate.status = 16;
+                    }
+                }
+            }
+            pstate.command = this._targetSpeed;
+            if (targetState === relayState) {
+                pstate.status = relayState > 0 ? 1 : 0;
+                pstate.driveState = relayState > 0 ? 2 : 0;
+                pstate.relay = relayState;
+            }
+            else {
+                pstate.driveState = 0;
+            }
+            return new InterfaceServerResponse(200, 'Success');
+        }
+        catch (err) {
+            logger.error(`Error running pump sequence for ${this.pump.name}: ${err.message}`);
+            return Promise.reject(err);
+        }
+        finally { this.suspendPolling = false; }
+    };
+
+}
 export class NixiePumpRS485 extends NixiePump {
     public async setPumpStateAsync(pstate: PumpState) {
         // Don't poll while we are seting the state.
@@ -335,15 +485,17 @@ export class NixiePumpRS485 extends NixiePump {
             let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
             // Since these process are async the closing flag can be set
             // between calls.  We need to check it in between each call.
-            if (!this.closing) await this.setDriveStateAsync(pstate);
-            if (!this.closing) {
-                if (this._targetSpeed >= pt.minFlow && this._targetSpeed <= pt.maxFlow) await this.setPumpGPMAsync(pstate);
-                else if (this._targetSpeed >= pt.minSpeed && this._targetSpeed <= pt.maxSpeed) await this.setPumpRPMAsync(pstate);  
-            }
-           
-            if(!this.closing) await utils.sleep(2000);
-            if(!this.closing) await this.requestPumpStatus(pstate);
-            if(!this.closing) await this.setPumpToRemoteControl(pstate);
+            try { if (!this.closing) await this.setDriveStateAsync(); } catch (err) {}
+            try {
+                if (!this.closing) {
+                    if (this._targetSpeed >= pt.minFlow && this._targetSpeed <= pt.maxFlow) await this.setPumpGPMAsync();
+                    else if (this._targetSpeed >= pt.minSpeed && this._targetSpeed <= pt.maxSpeed) await this.setPumpRPMAsync();
+                }
+            } catch (err) { };
+            try { if (!this.closing && pt.name !== 'vsf') await this.setPumpFeature(6); } catch (err) { };
+            try { if(!this.closing) await utils.sleep(1000); } catch (err) { };
+            try { if (!this.closing) await this.requestPumpStatus(); } catch (err) { };
+            try { if (!this.closing) await this.setPumpToRemoteControl(); } catch (err) { };
             return new InterfaceServerResponse(200, 'Success');
         }
         catch (err) {
@@ -351,11 +503,11 @@ export class NixiePumpRS485 extends NixiePump {
             return Promise.reject(err);
         }
         finally { this.suspendPolling = false; }
-    
     };
-    protected async setDriveStateAsync(pstate: PumpState, running: boolean = true) {
+    protected async setDriveStateAsync(running: boolean = true) {
         return new Promise<void>((resolve, reject) => {
             let out = Outbound.create({
+                portId: this.pump.portId || 0,
                 protocol: Protocol.Pump,
                 dest: this.pump.address,
                 action: 6,
@@ -373,9 +525,10 @@ export class NixiePumpRS485 extends NixiePump {
             conn.queueSendMessage(out);
         });
     };
-    protected async requestPumpStatus(pstate: PumpState) {
+    protected async requestPumpStatus() {
         return new Promise<void>((resolve, reject) => {
             let out = Outbound.create({
+                portId: this.pump.portId || 0,
                 protocol: Protocol.Pump,
                 dest: this.pump.address,
                 action: 7,
@@ -393,9 +546,10 @@ export class NixiePumpRS485 extends NixiePump {
             conn.queueSendMessage(out);
         })
     };
-    protected setPumpToRemoteControl(spump: PumpState, running: boolean = true) {
+    protected setPumpToRemoteControl(running: boolean = true) {
         return new Promise<void>((resolve, reject) => {
             let out = Outbound.create({
+                portId: this.pump.portId || 0,
                 protocol: Protocol.Pump,
                 dest: this.pump.address,
                 action: 4,
@@ -414,15 +568,18 @@ export class NixiePumpRS485 extends NixiePump {
             conn.queueSendMessage(out);
         });
     }
-    protected setPumpManual(pstate: PumpState) {
+    protected setPumpFeature(feature?: number) {
+        // empty payload (possibly 0?, too) is no feature
+        // 6: Feature 1
         return new Promise<void>((resolve, reject) => {
             let out = Outbound.create({
+                portId: this.pump.portId || 0,
                 protocol: Protocol.Pump,
                 dest: this.pump.address,
                 action: 5,
-                payload: [],
+                payload: typeof feature === 'undefined' ? [] : [ feature ],
                 retries: 2,
-                repsonse: true,
+                response: true,
                 onComplete: (err, msg: Outbound) => {
                     if (err) {
                         logger.error(`Error sending setPumpManual for ${this.pump.name}: ${err.message}`);
@@ -434,9 +591,10 @@ export class NixiePumpRS485 extends NixiePump {
             conn.queueSendMessage(out);
         });
     };
-    protected async setPumpRPMAsync(pstate: PumpState) {
+    protected async setPumpRPMAsync() {
         return new Promise<void>((resolve, reject) => {
             let out = Outbound.create({
+                portId: this.pump.portId || 0,
                 protocol: Protocol.Pump,
                 dest: this.pump.address,
                 action: 1,
@@ -455,14 +613,15 @@ export class NixiePumpRS485 extends NixiePump {
             conn.queueSendMessage(out);
         });
     };
-    protected async setPumpGPMAsync(pstate: PumpState) {
+    protected async setPumpGPMAsync() {
         // packet for vf; vsf will override
         return new Promise<void>((resolve, reject) => {
             let out = Outbound.create({
+                portId: this.pump.portId || 0,
                 protocol: Protocol.Pump,
                 dest: this.pump.address,
-                action: 10,
-                payload: [1, 4, 2, 228, this._targetSpeed, 0],
+                action: 1,
+                payload: [2, 228, 0, this._targetSpeed],
                 retries: 1,
                 response: true,
                 onComplete: (err, msg) => {
@@ -484,10 +643,10 @@ export class NixiePumpRS485 extends NixiePump {
             this._pollTimer = null;
             let pstate = state.pumps.getItemById(this.pump.id);
             this._targetSpeed = 0;
-            try { await this.setDriveStateAsync(pstate, false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
-            try { await this.setPumpManual(pstate); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
-            try { await this.setDriveStateAsync(pstate, false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
-            try { await this.setPumpToRemoteControl(pstate, false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
+            try { await this.setDriveStateAsync(false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
+            try { await this.setPumpFeature(); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
+            try { await this.setDriveStateAsync(false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
+            try { await this.setPumpToRemoteControl(false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
             this.closing = true;
             // Make sure the polling timer is dead after we have closted this all off.  That way we do not
             // have another process that revives it from the dead.
@@ -500,88 +659,119 @@ export class NixiePumpRS485 extends NixiePump {
     }
 }
 export class NixiePumpVS extends NixiePumpRS485 {
-    public setTargetSpeed() {
+    public setTargetSpeed(pState: PumpState) {
         let _newSpeed = 0;
-        let pumpCircuits = this.pump.circuits.get();
-        for (let i = 0; i < pumpCircuits.length; i++) {
-            let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
-            let pc = pumpCircuits[i];
-            if (circ.isOn) _newSpeed = Math.max(_newSpeed, pc.speed);
+        if (!pState.pumpOnDelay) {
+            let pumpCircuits = this.pump.circuits.get();
+
+            for (let i = 0; i < pumpCircuits.length; i++) {
+                let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
+                let pc = pumpCircuits[i];
+                if (circ.isOn) _newSpeed = Math.max(_newSpeed, pc.speed);
+            }
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
+        this._targetSpeed = _newSpeed;
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minSpeed, this._targetSpeed), this.pump.maxSpeed);
         if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} RPM.`);
-        this._targetSpeed = _newSpeed;
     }
 }
 export class NixiePumpVF extends NixiePumpRS485 {
-    public setTargetSpeed() {
+    public setTargetSpeed(pState: PumpState) {
         let _newSpeed = 0;
-        let pumpCircuits = this.pump.circuits.get();
-        for (let i = 0; i < pumpCircuits.length; i++) {
-            let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
-            let pc = pumpCircuits[i];
-            if (circ.isOn) _newSpeed = Math.max(_newSpeed, pc.flow);
+        if (!pState.pumpOnDelay) {
+            let pumpCircuits = this.pump.circuits.get();
+            for (let i = 0; i < pumpCircuits.length; i++) {
+                let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
+                let pc = pumpCircuits[i];
+                if (circ.isOn) _newSpeed = Math.max(_newSpeed, pc.flow);
+            }
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
+        this._targetSpeed = _newSpeed;
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minFlow, this._targetSpeed), this.pump.maxFlow);
         if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} GPM.`);
-        this._targetSpeed = _newSpeed;
     }
 }
 export class NixiePumpVSF extends NixiePumpRS485 {
-    public setTargetSpeed() {
+    public setTargetSpeed(pState: PumpState) {
         let _newSpeed = 0;
-        let pumpCircuits = this.pump.circuits.get();
-        let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
-        // VSF pumps present a problem.  In fact they do not currently operate properly on Touch panels.  On touch these need to either be all in RPM or GPM
-        // if there is a mix in the circuit array then they will not work.  In IntelliCenter if there is an RPM setting in the mix it will use RPM by converting
-        // the GPM to RPM but if there is none then it will use GPM.
         let maxRPM = 0;
         let maxGPM = 0;
         let flows = 0;
         let speeds = 0;
-        let toRPM = (flowRate: number, minSpeed: number = 450, maxSpeed: number = 3450) => {
-            let eff = .03317 * maxSpeed;
-            let rpm = Math.min((flowRate * maxSpeed) / eff, maxSpeed);
-            return rpm > 0 ? Math.max(rpm, minSpeed) : 0;
-        };
-        let toGPM = (speed: number, maxSpeed: number = 3450, minFlow: number = 15, maxFlow: number = 140) => {
-            let eff = .03317 * maxSpeed;
-            let gpm = Math.min((eff * speed) / maxSpeed, maxFlow);
-            return gpm > 0 ? Math.max(gpm, minFlow) : 0;
-        }
-        for (let i = 0; i < pumpCircuits.length; i++) {
-            let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
-            let pc = pumpCircuits[i];
-            if (circ.isOn) {
-                if (pc.units > 0) {
-                    maxGPM = Math.max(maxGPM, pc.flow);
-                    // Calculate an RPM from this flow.
-                    maxRPM = Math.max(maxGPM, toRPM(pc.flow, pt.minSpeed, pt.maxSpeed));
-                    flows++;
-                }
-                else {
-                    maxRPM = Math.max(maxRPM, pc.speed);
-                    maxGPM = Math.max(maxGPM, toGPM(pc.speed, pt.maxSpeed, pt.minFlow, pt.maxFlow));
-                    speeds++;
+        if (!pState.pumpOnDelay) {
+            let pumpCircuits = this.pump.circuits.get();
+            let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
+            // VSF pumps present a problem.  In fact they do not currently operate properly on Touch panels.  On touch these need to either be all in RPM or GPM
+            // if there is a mix in the circuit array then they will not work.  In IntelliCenter if there is an RPM setting in the mix it will use RPM by converting
+            // the GPM to RPM but if there is none then it will use GPM.
+            let toRPM = (flowRate: number, minSpeed: number = 450, maxSpeed: number = 3450) => {
+                let eff = .03317 * maxSpeed;
+                let rpm = Math.min((flowRate * maxSpeed) / eff, maxSpeed);
+                return rpm > 0 ? Math.max(rpm, minSpeed) : 0;
+            };
+            let toGPM = (speed: number, maxSpeed: number = 3450, minFlow: number = 15, maxFlow: number = 140) => {
+                let eff = .03317 * maxSpeed;
+                let gpm = Math.min((eff * speed) / maxSpeed, maxFlow);
+                return gpm > 0 ? Math.max(gpm, minFlow) : 0;
+            }
+            for (let i = 0; i < pumpCircuits.length; i++) {
+                let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
+                let pc = pumpCircuits[i];
+                if (circ.isOn) {
+                    if (pc.units > 0) {
+                        maxGPM = Math.max(maxGPM, pc.flow);
+                        // Calculate an RPM from this flow.
+                        maxRPM = Math.max(maxGPM, toRPM(pc.flow, pt.minSpeed, pt.maxSpeed));
+                        flows++;
+                    }
+                    else {
+                        maxRPM = Math.max(maxRPM, pc.speed);
+                        maxGPM = Math.max(maxGPM, toGPM(pc.speed, pt.maxSpeed, pt.minFlow, pt.maxFlow));
+                        speeds++;
+                    }
                 }
             }
+            _newSpeed = speeds > 0 || flows === 0 ? maxRPM : maxGPM;
         }
-        _newSpeed = speeds > 0 || flows === 0 ? maxRPM : maxGPM;
         if (isNaN(_newSpeed)) _newSpeed = 0;
         // Send the flow message if it is flow and the rpm message if it is rpm.
         if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} ${flows > 0 ? 'GPM' : 'RPM'}.`);
         this._targetSpeed = _newSpeed;
     }
-    protected async setPumpGPMAsync(pstate: PumpState) {
-        // vsf payload; different from vf payload
+    protected async setPumpRPMAsync() {
+        // vsf action is 10 for rpm
         return new Promise<void>((resolve, reject) => {
             let out = Outbound.create({
+                portId: this.pump.portId || 0,
                 protocol: Protocol.Pump,
                 dest: this.pump.address,
                 action: 10,
-                payload: [1, 4, 2, 196, this._targetSpeed, 0],
+                payload: [2, 196, Math.floor(this._targetSpeed / 256), this._targetSpeed % 256],
+                retries: 1,
+                // timeout: 250,
+                response: true,
+                onComplete: (err, msg) => {
+                    if (err) {
+                        logger.error(`Error sending setPumpRPMAsync for ${this.pump.name}: ${err.message}`);
+                        reject(err);
+                    }
+                    else resolve();
+                }
+            });
+            conn.queueSendMessage(out);
+        });
+    };
+    protected async setPumpGPMAsync() {
+        // vsf payload; different from vf payload
+        return new Promise<void>((resolve, reject) => {
+            let out = Outbound.create({
+                portId: this.pump.portId || 0,
+                protocol: Protocol.Pump,
+                dest: this.pump.address,
+                action: 9,
+                payload: [2, 196, 0, this._targetSpeed],
                 retries: 1,
                 response: true,
                 onComplete: (err, msg) => {
@@ -597,3 +787,90 @@ export class NixiePumpVSF extends NixiePumpRS485 {
         });
     };
 };
+export class NixiePumpHWVS extends NixiePumpRS485 {
+    public setTargetSpeed(pState: PumpState) {
+        let _newSpeed = 0;
+        if (!pState.pumpOnDelay) {
+            let pumpCircuits = this.pump.circuits.get();
+
+            for (let i = 0; i < pumpCircuits.length; i++) {
+                let circ = state.circuits.getInterfaceById(pumpCircuits[i].circuit);
+                let pc = pumpCircuits[i];
+                if (circ.isOn) _newSpeed = Math.max(_newSpeed, pc.speed);
+            }
+        }
+        if (isNaN(_newSpeed)) _newSpeed = 0;
+        this._targetSpeed = _newSpeed;
+        if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minSpeed, this._targetSpeed), this.pump.maxSpeed);
+        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} RPM.`);
+    }
+    public async setPumpStateAsync(pstate: PumpState) {
+        // Don't poll while we are seting the state.
+        this.suspendPolling = true;
+        try {
+            let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
+            // Since these process are async the closing flag can be set
+            // between calls.  We need to check it in between each call.
+            try { if (!this.closing) { await this.setPumpRPMAsync(); } } catch (err) { }
+            return new InterfaceServerResponse(200, 'Success');
+        }
+        catch (err) {
+            logger.error(`Error running pump sequence for ${this.pump.name}: ${err.message}`);
+            return Promise.reject(err);
+        }
+        finally { this.suspendPolling = false; }
+    };
+    protected async requestPumpStatus() { return Promise.resolve(); };
+    protected setPumpFeature(feature?: number) { return Promise.resolve(); }
+    protected setPumpToRemoteControl(running: boolean = true) {
+        // We do nothing on this pump to set it to remote control.  That is unless we are turning it off.
+        return new Promise<void>((resolve, reject) => {
+            if (!running) {
+                let out = Outbound.create({
+                    portId: this.pump.portId || 0,
+                    protocol: Protocol.Hayward,
+                    source: 12, // Use the broadcast address
+                    dest: this.pump.address,
+                    action: 1,
+                    payload: [0], // when stopAsync is called, pass false to return control to pump panel
+                    // payload: spump.virtualControllerStatus === sys.board.valueMaps.virtualControllerStatus.getValue('running') ? [255] : [0],
+                    retries: 1,
+                    response: Response.create({ protocol: Protocol.Hayward, action: 12, source: this.pump.address }),
+                    onComplete: (err) => {
+                        if (err) {
+                            logger.error(`Error sending setPumpToRemoteControl for ${this.pump.name}: ${err.message}`);
+                            reject(err);
+                        }
+                        else resolve();
+                    }
+                });
+                conn.queueSendMessage(out);
+            }
+            else resolve();
+        });
+    }
+    protected async setPumpRPMAsync() {
+        return new Promise<void>((resolve, reject) => {
+            let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
+            let out = Outbound.create({
+                portId: this.pump.portId || 0,
+                protocol: Protocol.Hayward,
+                source: 12, // Use the broadcast address
+                dest: this.pump.address - 96,
+                action: 1,
+                payload: [Math.min(Math.round((this._targetSpeed / pt.maxSpeed) * 100), 100)], // when stopAsync is called, pass false to return control to pump panel
+                retries: 1,
+                response: Response.create({ protocol: Protocol.Hayward, action: 12, source: this.pump.address }),
+                onComplete: (err) => {
+                    if (err) {
+                        logger.error(`Error sending setPumpRPM for ${this.pump.name}: ${err.message}`);
+                        reject(err);
+                    }
+                    else resolve();
+                }
+            });
+            conn.queueSendMessage(out);
+        });
+    };
+
+}

@@ -15,6 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import * as express from "express";
+import * as extend from "extend";
+
 import { state, ICircuitState, LightGroupState, ICircuitGroupState, ChemicalDoseState } from "../../../controller/State";
 import { sys } from "../../../controller/Equipment";
 import { utils } from '../../../controller/Constants';
@@ -79,11 +81,53 @@ export class StateRoute {
             catch (err) { next(err); }
 
         });
-        app.search('/state/chemController/:id/doseHistory/ph', async (req, res, next) => {
+        app.get('/state/chemController/:id/doseLog/ph', async (req, res, next) => {
+            try {
+                let schem = state.chemControllers.getItemById(parseInt(req.params.id));
+                let filter = req.body || {};
+                let dh = await DataLogger.readFromEndAsync(`chemDosage_${schem.ph.chemType}.log`, ChemicalDoseState, (lineNumber: number, entry: ChemicalDoseState, arr: ChemicalDoseState[]): boolean => {
+                    if (entry.id !== schem.id) return false;
+                    if (typeof filter.lines !== 'undefined' && filter.lines <= arr.length) return false;
+                    if (typeof filter.date !== 'undefined' && entry.end < filter.date) return false;
+                    return true;
+                });
+                return res.status(200).send(dh);
+            }
+            catch (err) { next(err); }
+        });
+        app.search('/state/chemController/:id/doseLog/ph', async (req, res, next) => {
             try {
                 let schem = state.chemControllers.getItemById(parseInt(req.params.id));
                 let filter = req.body || {};
                 let dh = DataLogger.readFromEnd(`chemDosage_${schem.ph.chemType}.log`, ChemicalDoseState, (lineNumber: number, entry: ChemicalDoseState, arr: ChemicalDoseState[]): boolean => {
+                    if (entry.id !== schem.id) return;
+                    if (typeof filter.lines !== 'undefined' && filter.lines <= arr.length) return false;
+                    if (typeof filter.date !== 'undefined' && entry.end < filter.date) return false;
+                    return true;
+                });
+                return res.status(200).send(dh);
+            }
+            catch (err) { next(err); }
+        });
+        app.get('/state/chemController/:id/doseLog/orp', async (req, res, next) => {
+            try {
+                let schem = state.chemControllers.getItemById(parseInt(req.params.id));
+                let filter = req.body || {};
+                let dh = await DataLogger.readFromEndAsync(`chemDosage_orp.log`, ChemicalDoseState, (lineNumber: number, entry: ChemicalDoseState, arr: ChemicalDoseState[]): boolean => {
+                    if (entry.id !== schem.id) return false;
+                    if (typeof filter.lines !== 'undefined' && filter.lines <= arr.length) return false;
+                    if (typeof filter.date !== 'undefined' && entry.end < filter.date) return false;
+                    return true;
+                });
+                return res.status(200).send(dh);
+            }
+            catch (err) { next(err); }
+        });
+        app.search('/state/chemController/:id/doseLog/orp', async (req, res, next) => {
+            try {
+                let schem = state.chemControllers.getItemById(parseInt(req.params.id));
+                let filter = req.body || {};
+                let dh = DataLogger.readFromEnd(`chemDosage_orp.log`, ChemicalDoseState, (lineNumber: number, entry: ChemicalDoseState, arr: ChemicalDoseState[]): boolean => {
                     if (entry.id !== schem.id) return;
                     if (typeof filter.lines !== 'undefined' && filter.lines <= arr.length) return false;
                     if (typeof filter.date !== 'undefined' && entry.end < filter.date) return false;
@@ -109,7 +153,7 @@ export class StateRoute {
         });
 
         app.get('/state/chlorinator/:id', (req, res) => {
-            res.status(200).send(state.chlorinators.getItemById(parseInt(req.params.id, 10)).get());
+            res.status(200).send(state.chlorinators.getItemById(parseInt(req.params.id, 10), false).getExtended());
         });
         app.get('/state/circuit/:id', (req, res) => {
             res.status(200).send(state.circuits.getItemById(parseInt(req.params.id, 10)).get());
@@ -165,12 +209,49 @@ export class StateRoute {
             catch (err) {next(err);}
         });    
         app.put('/state/circuit/setTheme', async (req, res, next) => {
-           try {
-               let theme = await state.circuits.setLightThemeAsync(parseInt(req.body.id, 10), parseInt(req.body.theme, 10));
+            try {
+                let theme = await state.circuits.setLightThemeAsync(parseInt(req.body.id, 10), sys.board.valueMaps.lightThemes.encode(req.body.theme));
                return res.status(200).send(theme.get(true));
             } 
             catch (err) { next(err); }
-        }); 
+        });
+        app.put('/state/light/setTheme', async (req, res, next) => {
+            try {
+                let theme = await state.circuits.setLightThemeAsync(parseInt(req.body.id, 10), sys.board.valueMaps.lightThemes.encode(req.body.theme));
+                return res.status(200).send(theme.get(true));
+            }
+            catch (err) { next(err); }
+        });
+
+        app.put('/state/light/runCommand', async (req, res, next) => {
+            try {
+                let slight = await sys.board.circuits.runLightCommandAsync(req.body);
+                return res.status(200).send(slight.get(true));
+            }
+            catch (err) { next(err); }
+        });
+        app.put('/state/light/:id/colorHold', async (req, res, next) => {
+            try {
+                let slight = await sys.board.circuits.runLightCommandAsync({ id: parseInt(req.params.id, 10), command: 'colorhold' });
+                return res.status(200).send(slight.get(true));
+            }
+            catch (err) { next(err); }
+        });
+        app.put('/state/light/:id/colorRecall', async (req, res, next) => {
+            try {
+                let slight = await sys.board.circuits.runLightCommandAsync({ id: parseInt(req.params.id, 10), command: 'colorecall' });
+                return res.status(200).send(slight.get(true));
+            }
+            catch (err) { next(err); }
+        });
+        app.put('/state/light/:id/lightThumper', async (req, res, next) => {
+            try {
+                let slight = await sys.board.circuits.runLightCommandAsync({ id: parseInt(req.params.id, 10), command: 'lightthumper' });
+                return res.status(200).send(slight.get(true));
+            }
+            catch (err) { next(err); }
+        });
+
 /*         app.put('/state/intellibrite/setTheme', (req, res) => {
             let id = sys.board.equipmentIds.circuitGroups.start; 
             if (typeof req.body.theme !== 'undefined') id = parseInt(req.body.id, 10);
@@ -229,7 +310,7 @@ export class StateRoute {
                 if (typeof req.body.heatSetpoint !== 'undefined' && !isNaN(parseInt(req.body.heatSetpoint, 10)))
                     await sys.board.bodies.setHeatSetpointAsync(body, parseInt(req.body.heatSetpoint, 10));
                 else if (typeof req.body.setPoint !== 'undefined' && !isNaN(parseInt(req.body.setPoint, 10)))
-                    await sys.board.bodies.setHeatSetpointAsync(body, parseInt(req.body.heatSetpoint, 10));
+                    await sys.board.bodies.setHeatSetpointAsync(body, parseInt(req.body.setpoint, 10));
                 let tbody = state.temps.bodies.getItemById(body.id);
                 return res.status(200).send(tbody.get(true));
             } catch (err) { next(err); }
@@ -286,27 +367,57 @@ export class StateRoute {
             }
             catch (err) { next(err); }
         });
+        app.put('/state/lightGroup/runCommand', async (req, res, next) => {
+            try {
+                let sgroup = await sys.board.circuits.runLightGroupCommandAsync(req.body);
+                return res.status(200).send(sgroup.get(true));
+            }
+            catch (err) { next(err); }
+        });
         app.put('/state/lightGroup/:id/colorSync', async (req, res, next) => {
             try {
-                let sgroup = await sys.board.circuits.sequenceLightGroupAsync(parseInt(req.params.id, 10), 'sync');
+                let sgroup = await sys.board.circuits.sequenceLightGroupAsync(parseInt(req.params.id, 10), 'colorsync');
                 return res.status(200).send(sgroup.get(true));
             }
             catch (err) { next(err); }
         });
         app.put('/state/lightGroup/:id/colorSet', async (req, res, next) => {
             try {
-                let sgroup = await sys.board.circuits.sequenceLightGroupAsync(parseInt(req.params.id, 10), 'set');
+                let sgroup = await sys.board.circuits.sequenceLightGroupAsync(parseInt(req.params.id, 10), 'colorset');
                 return res.status(200).send(sgroup.get(true));
             }
             catch (err) { next(err); }
         });
         app.put('/state/lightGroup/:id/colorSwim', async (req, res, next) => {
             try {
-                let sgroup = await sys.board.circuits.sequenceLightGroupAsync(parseInt(req.params.id, 10), 'swim');
+                let sgroup = await sys.board.circuits.sequenceLightGroupAsync(parseInt(req.params.id, 10), 'colorswim');
                 return res.status(200).send(sgroup.get(true));
             }
             catch (err) { next(err); }
         });
+        app.put('/state/lightGroup/:id/colorHold', async (req, res, next) => {
+            try {
+                let sgroup = await sys.board.circuits.runLightGroupCommandAsync({ id: parseInt(req.params.id, 10), command: 'colorhold' });
+                return res.status(200).send(sgroup.get(true));
+            }
+            catch (err) { next(err); }
+        });
+        app.put('/state/lightGroup/:id/colorRecall', async (req, res, next) => {
+            try {
+                let sgroup = await sys.board.circuits.runLightGroupCommandAsync({ id: parseInt(req.params.id, 10), command: 'colorrecall' });
+                return res.status(200).send(sgroup.get(true));
+            }
+            catch (err) { next(err); }
+        });
+        app.put('/state/lightGroup/:id/lightThumper', async (req, res, next) => {
+            try {
+                let sgroup = await sys.board.circuits.runLightGroupCommandAsync({ id: parseInt(req.params.id, 10), command: 'lightthumper' });
+                return res.status(200).send(sgroup.get(true));
+            }
+            catch (err) { next(err); }
+        });
+
+
         app.get('/state/emitAll', (req, res) => {
             res.status(200).send(state.emitAllEquipmentChanges());
         });

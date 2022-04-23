@@ -36,7 +36,7 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
     }
     private client: MqttClient;
     private topics: string[] = [];
-    public events: MqttInterfaceEvent[];
+    declare events: MqttInterfaceEvent[];
     private subscribed: boolean; // subscribed to events or not
     private sentInitialMessages = false;
     private init = () => {
@@ -370,7 +370,18 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
                                     logger.error(new ServiceParameterError(`Cannot set body setPoint.  You must supply a valid id, circuit, name, or type for the body`, 'body', 'id', msg.id));
                                     return;
                                 }
-                                let tbody = await sys.board.bodies.setHeatSetpointAsync(body, parseInt(msg.setPoint, 10));
+                                if (typeof msg.setPoint !== 'undefined' || typeof msg.heatSetpoint !== 'undefined') {
+                                    let setPoint = parseInt(msg.setPoint, 10) || parseInt(msg.heatSetpoint, 10);
+                                    if (!isNaN(setPoint)) {
+                                        await sys.board.bodies.setHeatSetpointAsync(body, setPoint);
+                                    }
+                                }
+                                if (typeof msg.coolSetpoint !== 'undefined') {
+                                    let setPoint = parseInt(msg.coolSetpoint, 10);
+                                    if (!isNaN(setPoint)) {
+                                        await sys.board.bodies.setCoolSetpointAsync(body, setPoint);
+                                    }
+                                }
                             }
                         }
                         catch (err) { logger.error(err); }
@@ -412,7 +423,7 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
                         break;
                     case 'settheme':
                         try {
-                            let theme = await state.circuits.setLightThemeAsync(parseInt(msg.id, 10), parseInt(msg.theme, 10));
+                            let theme = await state.circuits.setLightThemeAsync(parseInt(msg.id, 10), sys.board.valueMaps.lightThemes.encode(msg.theme));
                         }
                         catch (err) { logger.error(err); }
                         break;

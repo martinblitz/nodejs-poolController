@@ -39,26 +39,42 @@ class VersionCheck {
         if (typeof state.appVersion.nextCheckTime === 'undefined' || new Date() > new Date(state.appVersion.nextCheckTime)) setTimeout(() => { this.checkAll(); }, 100);
     }
     public checkGitLocal() {
+        let env = process.env;
         // check local git version
         try {
-            let res = execSync('git rev-parse --abbrev-ref HEAD');
-            let out = res.toString().trim();
+            let out: string;
+            if (typeof env.SOURCE_BRANCH !== 'undefined') 
+            {
+                out = env.SOURCE_BRANCH // check for docker variable
+            }
+            else {
+                let res = execSync('git rev-parse --abbrev-ref HEAD', { stdio: 'pipe' });
+                out = res.toString().trim();
+            }
             logger.info(`The current git branch output is ${out}`);
             switch (out) {
-                case 'fatal':
-                case 'command':
-                    state.appVersion.gitLocalBranch = '--';
-                    break;
-                default:
-                    state.appVersion.gitLocalBranch = out;
-            }
+            case 'fatal':
+            case 'command':
+                state.appVersion.gitLocalBranch = '--';
+                break;
+            default:
+                state.appVersion.gitLocalBranch = out;
+        }
         }
         catch (err) {
-            logger.error(`Unable to retrieve local git branch.  ${err}`);
+            state.appVersion.gitLocalBranch = '--';
+            logger.warn(`Unable to retrieve local git branch.  ${err}`);
         }
         try {
-            let res = execSync('git rev-parse HEAD');
-            let out = res.toString().trim();
+            let out: string;
+            if (typeof env.SOURCE_COMMIT !== 'undefined') 
+            {
+                out = env.SOURCE_COMMIT; // check for docker variable
+            }
+            else {
+                let res = execSync('git rev-parse HEAD', { stdio: 'pipe' });
+                out = res.toString().trim();
+            }
             logger.info(`The current git commit output is ${out}`);
             switch (out) {
                 case 'fatal':
@@ -69,7 +85,10 @@ class VersionCheck {
                     state.appVersion.gitLocalCommit = out;
             }
         }
-        catch (err) { logger.error(`Unable to retrieve local git commit.  ${err}`); }
+        catch (err) { 
+            state.appVersion.gitLocalCommit = '--';
+            logger.warn(`Unable to retrieve local git commit.  ${err}`); 
+        }
     }
     private checkAll() {
         try {
@@ -83,7 +102,7 @@ class VersionCheck {
             });
         }
         catch (err) {
-            logger.error(err);
+            logger.error(`Error checking latest release: ${err.message}`);
         }
     }
 

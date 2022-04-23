@@ -1,5 +1,37 @@
 # Changelog
 
+## 7.6.1
+1. Many bugfixes: Intellichem, Touch body capacities, Ultratemp heaters, Nixie, more...
+2. Add env variables for Docker setup: POOL_RS485_PORT, POOL_NET_CONNECT, POOL_NET_HOST, POOL_NET_PORT, SOURCE_COMMIT, SOURCE_BRANCH
+3. Update dependencies
+## 7.6
+1. MasterTemp RS485 support for Nixie and IntelliCenter
+2. Nixie Valve Rotation delay
+3. Nixie Heater Cooldown delay
+4. Nixie Cleaner Start delay
+5. Nixie Cleaner Shutdown on Solar
+6. Nixie Delay Cancel
+
+## 7.5.1
+1. Backup/restore fixes
+2. Egg timer expiration
+3. Bug Fixes
+4. dashPanel/messageManager Filter
+5. RS485 refactor
+
+## 7.5
+1. Backup/restore
+2. Intellitouch add expansion modules
+## 7.4
+1. Filter object, emit, monitoring
+
+## 7.3.1
+1. Influx 2.0 support
+
+## 7.3
+1. Dynamic chlorinating % based on ORP demand for Nixie
+2. Docker creation updates
+
 ## 7.2
 1. Refactor Intellichem and Chem Controllers
 

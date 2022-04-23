@@ -20,7 +20,7 @@ import * as extend from "extend";
 import * as util from "util";
 import { setTimeout } from "timers";
 import { logger } from "../logger/Logger";
-import { state, CommsState } from "./State";
+import { state, CommsState, ChemicalChlorState } from "./State";
 import { Timestamp, ControllerType, utils } from "./Constants";
 export { ControllerType };
 import { webApp } from "../web/Server";
@@ -31,6 +31,7 @@ import { conn } from './comms/Comms';
 import { versionCheck } from "../config/VersionCheck";
 import { NixieControlPanel } from "./nixie/Nixie";
 import { NixieBoard } from 'controller/boards/NixieBoard';
+import { child } from "winston";
 
 interface IPoolSystem {
     cfgPath: string;
@@ -68,7 +69,8 @@ interface IPoolSystem {
 }
 
 export class PoolSystem implements IPoolSystem {
-    public _hasChanged: boolean=false;
+    public _hasChanged: boolean = false;
+    public isReady: boolean = false;
     constructor() {
         this.cfgPath = path.posix.join(process.cwd(), '/data/poolConfig.json');
     }
@@ -99,7 +101,12 @@ export class PoolSystem implements IPoolSystem {
                 { val: 3, name: 'IT5S', part: 'i5+3S', desc: 'IntelliTouch i5+3S', bodies: 1, circuits: 6, shared: false },
                 { val: 4, name: 'IT9S', part: 'i9+3S', desc: 'IntelliTouch i9+3S', bodies: 1, circuits: 9, shared: false },
                 { val: 5, name: 'IT10D', part: 'i10D', desc: 'IntelliTouch i10D', bodies: 1, circuits: 10, shared: false, dual: true }
+            ],
+            expansionModules: [
+                { val: 32, name: 'IT5X', part: 'i5X', desc: 'IntelliTouch i5X', circuits: 5, shared: false },
+                { val: 33, name: 'IT10X', part: 'i10X', desc: 'IntelliTouch i10X', circuits: 10, shared: false }
             ]
+
         });
         arr.push({
             type: 'intellicenter', name: 'IntelliCenter',
@@ -109,7 +116,8 @@ export class PoolSystem implements IPoolSystem {
                 { val: 2, name: 'i8P', part: '521977Z', desc: 'IntelliCenter i8P', bodies: 1, valves: 2, circuits: 8, shared: false, dual: false, chlorinators: 1, chemControllers: 1 },
                 { val: 3, name: 'i8PS', part: '521968Z', desc: 'IntelliCenter i8PS', bodies: 2, valves: 4, circuits: 9, shared: true, dual: false, chlorinators: 1, chemControllers: 1 },
                 { val: 4, name: 'i10P', part: '521993Z', desc: 'IntelliCenter i10P', bodies: 1, valves: 2, circuits: 10, shared: false, dual: false, chlorinators: 1, chemControllers: 1 }, // This is a guess
-                { val: 5, name: 'i10PS', part: '521873Z', desc: 'IntelliCenter i10PS', bodies: 2, valves: 4, circuits: 11, shared: true, dual: false, chlorinators: 1, chemControllers: 1 }
+                { val: 5, name: 'i10PS', part: '521873Z', desc: 'IntelliCenter i10PS', bodies: 2, valves: 4, circuits: 11, shared: true, dual: false, chlorinators: 1, chemControllers: 1 },
+                { val: 7, name: 'i10D', part: '523029Z', desc: 'IntelliCenter i10D', bodies: 2, valves: 2, circuits: 11, shared: false, dual: true, chlorinators: 2, chemControllers: 2 },
             ]
         });
         arr.push({
@@ -135,12 +143,28 @@ export class PoolSystem implements IPoolSystem {
         }
         else
             this.initNixieController();
+        this.isReady = true;
     }
     public init() {
         let cfg = this.loadConfigFile(this.cfgPath, {});
         let cfgDefault = this.loadConfigFile(path.posix.join(process.cwd(), '/defaultPool.json'), {});
         cfg = extend(true, {}, cfgDefault, cfg);
-        this.data = this.onchange(cfg, function() { sys.dirty = true; });
+        // First lets remove all the null ids.
+        EqItemCollection.removeNullIds(cfg.bodies);
+        EqItemCollection.removeNullIds(cfg.schedules);
+        EqItemCollection.removeNullIds(cfg.features);
+        EqItemCollection.removeNullIds(cfg.circuits);
+        EqItemCollection.removeNullIds(cfg.pumps);
+        EqItemCollection.removeNullIds(cfg.chlorinators);
+        EqItemCollection.removeNullIds(cfg.valves);
+        EqItemCollection.removeNullIds(cfg.heaters);
+        EqItemCollection.removeNullIds(cfg.covers);
+        EqItemCollection.removeNullIds(cfg.circuitGroups);
+        EqItemCollection.removeNullIds(cfg.lightGroups);
+        EqItemCollection.removeNullIds(cfg.remotes);
+        EqItemCollection.removeNullIds(cfg.chemControllers);
+        EqItemCollection.removeNullIds(cfg.filters);
+        this.data = this.onchange(cfg, function () { sys.dirty = true; });
         this.general = new General(this.data, 'pool');
         this.equipment = new Equipment(this.data, 'equipment');
         this.configVersion = new ConfigVersion(this.data, 'configVersion');
@@ -180,7 +204,7 @@ export class PoolSystem implements IPoolSystem {
     }
 
     public resetSystem() {
-        conn.pause();
+        conn.pauseAll();
         this.resetData();
         state.resetData();
         this.data.controllerType === 'unknown';
@@ -188,7 +212,7 @@ export class PoolSystem implements IPoolSystem {
         this.controllerType = ControllerType.Unknown;
         state.status = 0;
         this.board = BoardFactory.fromControllerType(ControllerType.Unknown, this);
-        setTimeout(function () { state.status = 0; conn.resume(); }, 0);
+        setTimeout(function () { state.status = 0; conn.resumeAll(); }, 0);
     }
     public get controllerType(): ControllerType { return this.data.controllerType as ControllerType; }
     public set controllerType(val: ControllerType) {
@@ -250,43 +274,6 @@ export class PoolSystem implements IPoolSystem {
                 break;
         }
     }
-   /*  public searchForAdditionalDevices() {
-        if (this.controllerType === ControllerType.Unknown || typeof this.controllerType === 'undefined' && !conn.mockPort) {
-            //logger.info("Searching chlorinators, pumps and chem controllers");
-            //EquipmentStateMessage.initVirtual();
-            //sys.board.virtualChlorinatorController.search();
-            //sys.board.virtualPumpControllers.search();
-            //sys.board.virtualChemControllers.search();
-            state.equipment.controllerType = sys.controllerType = ControllerType.Nixie;
-            let board = sys.board as NixieBoard;
-            (async () => { await board.initNixieBoard(); })();
-        }
-        else {
-            if (this.controllerType === ControllerType.Virtual) {
-                state.mode = 0;
-                state.status = 1;
-                sys.equipment.setEquipmentIds();
-                state.emitControllerChange();
-                sys.board.processStatusAsync();
-            }
-            else {
-                let board = sys.board as NixieBoard;
-                (async () => { await board.initNixieBoard(); })();
-            }
-
-            // if the app crashes while the pumps are running we need to reset the 'virtualControllerStatus' to stopped so it can start again
-            sys.board.virtualPumpControllers.softStop();
-            //sys.board.virtualChlorinatorController.stop();
-            sys.board.virtualChemControllers.stop();
-            // try to start any virtual controllers that are present irregardless of overall controller virtual status
-            sys.board.virtualPumpControllers.start();
-            //sys.board.virtualChlorinatorController.start();
-            sys.board.virtualChemControllers.start();
-            sys.board.heaters.initTempSensors();
-            sys.board.heaters.updateHeaterServices();
-            state.cleanupState();
-        }
-    } */
     public board: SystemBoard = new SystemBoard(this);
     public ncp: NixieControlPanel = new NixieControlPanel();
     public processVersionChanges(ver: ConfigVersion) { this.board.requestConfiguration(ver); }
@@ -537,6 +524,14 @@ class EqItemCollection<T> implements IEqItemCollection {
             this.name = name;
         }
     }
+    public static removeNullIds(data: any) {
+        if (typeof data !== 'undefined' && Array.isArray(data) && typeof data.length === 'number') {
+            for (let i = data.length - 1; i >= 0; i--) {
+                if (typeof data[i].id !== 'number') data.splice(i, 1);
+                else if (typeof data[i].id === 'undefined' || isNaN(data[i].id)) data.splice(i, 1);
+            }
+        }
+    }
     public getItemByIndex(ndx: number, add?: boolean, data?: any): T {
         if (this.data.length > ndx) return this.createItem(this.data[ndx]);
         if (typeof add !== 'undefined' && add)
@@ -544,7 +539,7 @@ class EqItemCollection<T> implements IEqItemCollection {
         return this.createItem(extend({}, { id: ndx + 1 }, data));
     }
     public getItemById(id: number | string, add?: boolean, data?: any): T {
-        let itm = this.find(elem => elem.id === id && typeof elem.id !== 'undefined');
+        let itm = this.find(elem => { return typeof (elem as { id?}).id !== 'undefined' && (elem as { id?}).id === id });
         if (typeof itm !== 'undefined') return itm;
         if (typeof add !== 'undefined' && add) return this.add(extend(true, { id: id }, data));
         return this.createItem(data || { id: id });
@@ -574,7 +569,7 @@ class EqItemCollection<T> implements IEqItemCollection {
         this.data.splice(ndx, 1);
     }
     // Finds an item and returns undefined if it doesn't exist.
-    public find(f: (value: any, index?: number, obj?: any) => boolean): T {
+    public find(f: (value: T, index?: number, obj?: any) => boolean): T {
         let itm = this.data.find(f);
         if (typeof itm !== 'undefined') return this.createItem(itm);
     }
@@ -619,8 +614,8 @@ class EqItemCollection<T> implements IEqItemCollection {
         });
     }
     public sort(fn: (a, b) => number) { this.data.sort(fn); }
-    public count(fn: () => boolean): number { return this.data.filter(fn).length; }
-    public getNextEquipmentId(range: EquipmentIdRange, exclude?:number[]): number {
+    public count(fn: (value: T, index?: any, array?: any[]) => boolean): number { return this.data.filter(fn).length; }
+    public getNextEquipmentId(range: EquipmentIdRange, exclude?: number[]): number {
         for (let i = range.start; i <= range.end; i++) {
             let eq = this.data.find(elem => elem.id === i);
             if (typeof eq === 'undefined') {
@@ -661,6 +656,7 @@ export class General extends EqItem {
         if (master === -1)
             super.clear();
     }
+
 }
 // Custom Names are IntelliTouch Only
 export class CustomNameCollection extends EqItemCollection<CustomName> {
@@ -729,25 +725,53 @@ export class Options extends EqItem {
         if (typeof this.data.units === 'undefined') this.data.units = 0;
         if (typeof this.data.clockMode === 'undefined') this.data.clockMode = 12;
         if (typeof this.data.adjustDST === 'undefined') this.data.adjustDST = true;
+        if (typeof this.data.freezeThreshold === 'undefined') this.data.freezeThreshold = 35;
+        if (typeof this.data.pumpDelay === 'undefined') this.data.pumpDelay = false;
+        if (typeof this.data.valveDelayTime === 'undefined') this.data.valveDelayTime = 30;
+        // RKS: 12-04-21 If you are reading this in a few months delete the line below.
+        if (this.data.valveDelayTime > 1000) this.data.valveDelayTime = this.data.valveDelayTime / 1000;
+        if (typeof this.data.heaterStartDelay === 'undefined') this.data.heaterStartDelay = true;
+        if (typeof this.data.cleanerStartDelay === 'undefined') this.data.cleanerStartDelay = true;
+        if (typeof this.data.cleanerSolarDelay === 'undefined') this.data.cleanerSolarDelay = true;
+        if (typeof this.data.heaterStartDelayTime === 'undefined') this.data.heaterStartDelayTime = 10;
+        if (typeof this.data.cleanerStartDelayTime === 'undefined') this.data.cleanerStartDelayTime = 300; // 5min
+        if (typeof this.data.cleanerSolarDelayTime === 'undefined') this.data.cleanerSolarDelayTime = 300; // 5min
     }
     public get clockMode(): number | any { return this.data.clockMode; }
     public set clockMode(val: number | any) { this.setDataVal('clockMode', sys.board.valueMaps.clockModes.encode(val)); }
     public get units(): number | any { return this.data.units; }
-    public set units(val: number | any) { this.setDataVal('units', sys.board.valueMaps.tempUnits.encode(val)); }
+    public set units(val: number | any) { this.setDataVal('units', sys.board.valueMaps.systemUnits.encode(val)); }
     public get clockSource(): string { return this.data.clockSource; }
     public set clockSource(val: string) { this.setDataVal('clockSource', val); }
     public get adjustDST(): boolean { return this.data.adjustDST; }
     public set adjustDST(val: boolean) { this.setDataVal('adjustDST', val); }
     public get manualPriority(): boolean { return this.data.manualPriority; }
     public set manualPriority(val: boolean) { this.setDataVal('manualPriority', val); }
-    public get vacationMode(): boolean { return this.data.vacationMode; }
-    public set vacationMode(val: boolean) { this.setDataVal('vacationMode', val); }
+    public get vacation(): VacationOptions { return new VacationOptions(this.data, 'vacation', this); }
     public get manualHeat(): boolean { return this.data.manualHeat; }
     public set manualHeat(val: boolean) { this.setDataVal('manualHeat', val); }
     public get pumpDelay(): boolean { return this.data.pumpDelay; }
     public set pumpDelay(val: boolean) { this.setDataVal('pumpDelay', val); }
+    public get valveDelayTime(): number { return this.data.valveDelayTime; }
+    public set valveDelayTime(val: number) { this.setDataVal('valveDelayTime', val); }
     public get cooldownDelay(): boolean { return this.data.cooldownDelay; }
     public set cooldownDelay(val: boolean) { this.setDataVal('cooldownDelay', val); }
+    public get freezeThreshold(): number { return this.data.freezeThreshold; }
+    public set freezeThreshold(val: number) { this.setDataVal('freezeThreshold', val); }
+    public get heaterStartDelay(): boolean { return this.data.heaterStartDelay; }
+    public set heaterStartDelay(val: boolean) { this.setDataVal('heaterStartDelay', val); }
+    public get heaterStartDelayTime(): number { return this.data.heaterStartDelayTime; }
+    public set heaterStartDelayTime(val: number) { this.setDataVal('heaterStartDelayTime', val); }
+
+    public get cleanerStartDelay(): boolean { return this.data.cleanerStartDelay; }
+    public set cleanerStartDelay(val: boolean) { this.setDataVal('cleanerStartDelay', val); }
+    public get cleanerStartDelayTime(): number { return this.data.cleanerStartDelayTime; }
+    public set cleanerStartDelayTime(val: number) { this.setDataVal('cleanerStartDelayTime', val); }
+    public get cleanerSolarDelay(): boolean { return this.data.cleanerSolarDelay; }
+    public set cleanerSolarDelay(val: boolean) { this.setDataVal('cleanerSolarDelay', val); }
+    public get cleanerSolarDelayTime(): number { return this.data.cleanerSolarDelayTime; }
+    public set cleanerSolarDelayTime(val: number) { this.setDataVal('cleanerSolarDelayTime', val); }
+
     //public get airTempAdj(): number { return typeof this.data.airTempAdj === 'undefined' ? 0 : this.data.airTempAdj; }
     //public set airTempAdj(val: number) { this.setDataVal('airTempAdj', val); }
     //public get waterTempAdj1(): number { return typeof this.data.waterTempAdj1 === 'undefined' ? 0 : this.data.waterTempAdj1; }
@@ -758,6 +782,42 @@ export class Options extends EqItem {
     //public set waterTempAdj2(val: number) { this.setDataVal('waterTempAdj2', val); }
     //public get solarTempAdj2(): number { return typeof this.data.solarTempAdj2 === 'undefined' ? 0 : this.data.solarTempAdj2; }
     //public set solarTempAdj2(val: number) { this.setDataVal('solarTempAd2', val); }
+}
+export class VacationOptions extends ChildEqItem {
+    public initData() {
+        if (typeof this.data.enabled === 'undefined') this.data.enabled = false;
+        if (typeof this.data.useTimeframe === 'undefined') this.data.useTimeframe = false;
+    }
+    private _startDate: Date;
+    private _endDate: Date;
+    public get enabled(): boolean { return this.data.enabled; }
+    public set enabled(val: boolean) { this.setDataVal('enabled', val); }
+    public get useTimeframe(): boolean { return this.data.useTimeframe; }
+    public set useTimeframe(val: boolean) { this.setDataVal('useTimeframe', val); }
+    public get startDate() {
+        if (typeof this._startDate === 'undefined') this._startDate = typeof this.data.startDate === 'string' ? new Date(this.data.startDate) : undefined;
+        return this._startDate;
+    }
+    public set startDate(val: Date | string | number) {
+        this._startDate = new Date(val);
+        this._saveDate('startDate', this._startDate);
+    }
+    public get endDate() {
+        if (typeof this._endDate === 'undefined') this._endDate = typeof this.data.endDate === 'string' ? new Date(this.data.endDate) : undefined;
+        return this._endDate;
+    }
+    public set endDate(val: Date | string | number) {
+        this._endDate = new Date(val);
+        this._saveDate('endDate', this._endDate);
+    }
+
+    private _saveDate(prop: string, dt: Date) {
+        if (typeof dt !== 'undefined' && !isNaN(dt.getTime())) {
+            dt.setHours(0, 0, 0, 0);
+            this.setDataVal(prop, Timestamp.toISOLocal(dt));
+        }
+        else this.setDataVal(prop, undefined);
+    }
 }
 export class Location extends EqItem {
     public dataName = 'locationConfig';
@@ -823,6 +883,8 @@ export class Equipment extends EqItem {
     public set shared(val: boolean) { this.setDataVal('shared', val); }
     public get dual(): boolean { return this.data.dual; }
     public set dual(val: boolean) { this.setDataVal('dual', val); }
+    public get intakeReturnValves(): boolean { return this.data.intakeReturnValves; }
+    public set intakeReturnValves(val: boolean) { this.setDataVal('intakeReturnValves', val); }
     public get maxBodies(): number { return this.data.maxBodies || 4; }
     public set maxBodies(val: number) { this.setDataVal('maxBodies', val); }
     public get maxValves(): number { return this.data.maxValves || 26; }
@@ -944,7 +1006,6 @@ export class ConfigVersion extends EqItem {
             if (prop === 'lastUpdated') continue;
             this.data[prop] = 0;
         }
-
     }
 }
 
@@ -968,6 +1029,10 @@ export class BodyCollection extends EqItemCollection<Body> {
 }
 export class Body extends EqItem {
     public dataName = 'bodyConfig';
+    public initData() {
+        if (typeof this.data.capacityUnits === 'undefined') this.data.capacityUnits = 1;
+        if (typeof this.data.showInDashboard === 'undefined') this.data.showInDashboard = true;
+    }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.data.id = val; }
     public get name(): string { return this.data.name; }
@@ -992,7 +1057,16 @@ export class Body extends EqItem {
     public set heatSetpoint(val: number) { this.setDataVal('setPoint', val); }
     public get coolSetpoint(): number { return this.data.coolSetpoint; }
     public set coolSetpoint(val: number) { this.setDataVal('coolSetpoint', val); }
+    public get showInDashboard(): boolean { return this.data.showInDashboard; }
+    public set showInDashboard(val: boolean) { this.setDataVal('showInDashboard', val); }
+    public get capacityUnits(): number | any { return this.data.capacityUnits; }
+    public set capacityUnits(val: number | any) { this.setDataVal('capacityUnits', sys.board.valueMaps.volumeUnits.encode(val)); }
     public getHeatModes() { return sys.board.bodies.getHeatModes(this.id); }
+    public getExtended() {
+        let body = this.get(true);
+        body.capacityUnits = sys.board.valueMaps.volumeUnits.transform(this.capacityUnits || 1);
+        return body;
+    }
 }
 export class ScheduleCollection extends EqItemCollection<Schedule> {
     constructor(data: any, name?: string) { super(data, name || "schedules"); }
@@ -1039,13 +1113,15 @@ export class Schedule extends EqItem {
     public set coolSetpoint(val: number) { this.setDataVal('coolSetpoint', val); }
     public get isActive(): boolean { return this.data.isActive; }
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
+    public get disabled(): boolean { return this.data.disabled; }
+    public set disabled(val: boolean) { this.setDataVal('disabled', val); }
     public get startMonth(): number { return this._startDate.getMonth() + 1; }
-    public set startMonth(val: number) { this._startDate.setMonth(val - 1); this._saveStartDate(); }
-    public get startDay(): number { return this._startDate.getDate(); }
-    public set startDay(val: number) { this._startDate.setDate(val); this._saveStartDate(); }
-    public get startYear(): number { return this._startDate.getFullYear(); }
-    public set startYear(val: number) { this._startDate.setFullYear(val < 100 ? val + 2000 : val); this._saveStartDate(); }
-    public get startDate(): Date { return this._startDate; }
+    public set startMonth(val: number) { if (typeof this._startDate === 'undefined') this._startDate = new Date(); this._startDate.setMonth(val - 1); this._saveStartDate(); }
+    public get startDay(): number { if (typeof this._startDate === 'undefined') this._startDate = new Date(); return this._startDate.getDate(); }
+    public set startDay(val: number) { if (typeof this._startDate === 'undefined') this._startDate = new Date(); this._startDate.setDate(val); this._saveStartDate(); }
+    public get startYear(): number { if (typeof this._startDate === 'undefined') this._startDate = new Date(); return this._startDate.getFullYear(); }
+    public set startYear(val: number) { if (typeof this._startDate === 'undefined') this._startDate = new Date(); this._startDate.setFullYear(val < 100 ? val + 2000 : val); this._saveStartDate(); }
+    public get startDate(): Date { return typeof this._startDate === 'undefined' ? this._startDate = new Date() : this._startDate; }
     public set startDate(val: Date) { this._startDate = val; }
     public get scheduleType(): number | any { return this.data.scheduleType; }
     public set scheduleType(val: number | any) { this.setDataVal('scheduleType', sys.board.valueMaps.scheduleTypes.encode(val)); }
@@ -1085,6 +1161,9 @@ export class EggTimer extends EqItem {
 }
 export class CircuitCollection extends EqItemCollection<Circuit> {
     constructor(data: any, name?: string) { super(data, name || "circuits"); }
+    public filter(f: (value: Circuit, index?: any, array?: any[]) => boolean): CircuitCollection {
+        return new CircuitCollection({ circuits: this.data.filter(f) });
+    }
     public createItem(data: any): Circuit { return new Circuit(data); }
     public add(obj: any): Circuit {
         this.data.push(obj);
@@ -1103,6 +1182,13 @@ export class CircuitCollection extends EqItemCollection<Circuit> {
 }
 export class Circuit extends EqItem implements ICircuit {
     public dataName = 'circuitConfig';
+    public initData() {
+        if (typeof this.data.freeze === 'undefined') this.data.freeze = false;
+        if (typeof this.data.type === 'undefined') this.data.type = 0;
+        if (typeof this.data.isActive === 'undefined') this.data.isActive = false;
+        if (typeof this.data.eggTimer === 'undefined') this.data.eggTimer = 720;
+        if (typeof this.data.showInFeatures === 'undefined') this.data.showInFeatures = true;
+    }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
     public get name(): string { return this.data.name; }
@@ -1134,7 +1220,35 @@ export class Circuit extends EqItem implements ICircuit {
     public get deviceBinding(): string { return this.data.deviceBinding; }
     public set deviceBinding(val: string) { this.setDataVal('deviceBinding', val); }
     public get hasHeatSource() { return typeof sys.board.valueMaps.circuitFunctions.get(this.type || 0).hasHeatSource !== 'undefined' ? sys.board.valueMaps.circuitFunctions.get(this.type || 0).hasHeatSource : false };
-    public getLightThemes() { return sys.board.circuits.getLightThemes(this.type); }
+    public getLightThemes() {
+        // Lets do this universally driven by the metadata.
+        let cf = sys.board.valueMaps.circuitFunctions.transform(this.type);
+        if (cf.isLight && typeof cf.theme !== 'undefined') {
+            let arrThemes = sys.board.valueMaps.lightThemes.toArray();
+            let themes = [];
+            for (let i = 0; i < arrThemes.length; i++) {
+                let thm = arrThemes[i];
+                if (typeof thm.types !== 'undefined' && thm.types.length > 0 && thm.types.includes(cf.theme)) themes.push(thm);
+            }
+            return themes;
+        }
+        else return [];
+    }
+    public getLightCommands() {
+        // Lets do this universally driven by the metadata.
+        let cf = sys.board.valueMaps.circuitFunctions.transform(this.type);
+        if (cf.isLight && typeof cf.theme !== 'undefined') {
+            let arrCommands = sys.board.valueMaps.lightCommands.toArray();
+            let cmds = [];
+            for (let i = 0; i < arrCommands.length; i++) {
+                let cmd = arrCommands[i];
+                if (typeof cmd.types !== 'undefined' && cmd.types.length > 0 && cmd.types.includes(cf.theme)) cmds.push(cmd);
+            }
+            return cmds;
+        }
+        else return [];
+    }
+
     public static getIdName(id: number) {
         // todo: adjust for intellitouch
         let defName = "Aux" + (id + 1).toString();
@@ -1146,6 +1260,9 @@ export class Circuit extends EqItem implements ICircuit {
 }
 export class FeatureCollection extends EqItemCollection<Feature> {
     constructor(data: any, name?: string) { super(data, name || "features"); }
+    public filter(f: (value: Circuit, index?: any, array?: any[]) => boolean): FeatureCollection {
+        return new FeatureCollection({ features: this.data.filter(f) });
+    }
     public createItem(data: any): Feature { return new Feature(data); }
 }
 export class Feature extends EqItem implements ICircuit {
@@ -1155,6 +1272,7 @@ export class Feature extends EqItem implements ICircuit {
         if (typeof this.data.isActive === 'undefined') this.data.isActive = true;
         if (typeof this.data.eggTimer === 'undefined') this.data.eggTimer = 720;
         if (typeof this.data.showInFeatures === 'undefined') this.data.showInFeatures = true;
+        if (typeof this.data.master === 'undefined') this.data.master = sys.board.equipmentMaster; 
     }
     public dataName = 'featureConfig';
     public get id(): number { return this.data.id; }
@@ -1194,7 +1312,8 @@ export interface ICircuit {
     //showInCircuits?: boolean;
     showInFeatures?: boolean;
     macro?: boolean;
-    getLightThemes?: () => {};
+    getLightThemes?: (type?: number) => {};
+    getLightCommands?: (type?: number) => {};
     get(copy?: boolean);
     master: number;
 }
@@ -1213,8 +1332,14 @@ export class PumpCollection extends EqItemCollection<Pump> {
 }
 export class Pump extends EqItem {
     public dataName = 'pumpConfig';
+    public initData() {
+        if (typeof this.data.isVirtual !== 'undefined') delete this.data.isVirtual;
+        if (typeof this.data.portId === 'undefined') this.data.portId = 0;
+    }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
+    public get portId(): number { return this.data.portId; }
+    public set portId(val: number) { this.setDataVal('portId', val); }
     public get address(): number { return this.data.address || this.data.id + 95; }
     public set address(val: number) { this.setDataVal('address', val); }
     public get name(): string { return this.data.name; }
@@ -1259,8 +1384,10 @@ export class Pump extends EqItem {
     public set vacuumTime(val: number) { this.setDataVal('vacuumTime', val); }
     public get backgroundCircuit() { return this.data.backgroundCircuit; }
     public set backgroundCircuit(val: number) { this.setDataVal('backgroundCircuit', val); }
-    public get isVirtual() { return this.data.isVirtual; }
-    public set isVirtual(val: boolean) { this.setDataVal('isVirtual', val); }
+    public get filterSize() { return this.data.filterSize; }
+    public set filterSize(val: number) { this.setDataVal('filterSize', val); }
+    // public get isVirtual() { return this.data.isVirtual; }
+    // public set isVirtual(val: boolean) { this.setDataVal('isVirtual', val); }
     public get connectionId(): string { return this.data.connectionId; }
     public set connectionId(val: string) { this.setDataVal('connectionId', val); }
     public get deviceBinding(): string { return this.data.deviceBinding; }
@@ -1356,6 +1483,13 @@ export class ChlorinatorCollection extends EqItemCollection<Chlorinator> {
             body === 32 && elem.body <= 2 ||
             elem.body === 32 && body <= 2);
     }
+    public getItemByPortId(portId: number, add?: boolean, data?: any): Chlorinator {
+        let itm = this.find(elem => { return typeof (elem as { portId?}).portId !== 'undefined' && (elem as { portId?}).portId === portId });
+        if (typeof itm !== 'undefined') return itm;
+        if (typeof add !== 'undefined' && add) return this.add(extend(true, { portId: portId }, data));
+        return this.createItem(extend(true, data, { portId: portId }));
+    }
+    public findItemByPortId(portId: number) { return this.find(elem => { return typeof (elem as { portId?}).portId !== 'undefined' && (elem as { portId?}).portId === portId }); }
 }
 export class Chlorinator extends EqItem {
     public dataName = 'chlorinatorConfig';
@@ -1363,9 +1497,12 @@ export class Chlorinator extends EqItem {
         if (typeof this.data.disabled === 'undefined') this.data.disabled = false;
         if (typeof this.data.ignoreSaltReading === 'undefined') this.data.ignoreSaltReading = false;
         if (typeof this.data.isVirtual !== 'undefined') delete this.data.isVirtual;
+        if (typeof this.data.portId === 'undefined') this.data.portId = 0;
     }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
+    public get portId(): number { return this.data.portId; }
+    public set portId(val: number) { this.setDataVal('portId', val); }
     public get type(): number | any { return this.data.type; }
     public set type(val: number | any) { this.setDataVal('type', sys.board.valueMaps.chlorinatorType.encode(val)); }
     public get body(): number | any { return this.data.body; }
@@ -1388,12 +1525,32 @@ export class Chlorinator extends EqItem {
     //public set isVirtual(val: boolean) { this.setDataVal('isVirtual', val); }
     public get disabled(): boolean { return this.data.disabled; }
     public set disabled(val: boolean) { this.setDataVal('disabled', val); }
+    public get isDosing(): boolean { return this.data.isDosing; }
+    public set isDosing(val: boolean) { this.setDataVal('isDosing', val); }
     public get ignoreSaltReading() { return this.data.ignoreSaltReading; }
     public set ignoreSaltReading(val: boolean) { this.setDataVal('ignoreSaltReading', val); }
+    public get model() { return this.data.model; }
+    public set model(val: number | any) { this.setDataVal('model', sys.board.valueMaps.chlorinatorModel.encode(val)); }
 }
 export class ValveCollection extends EqItemCollection<Valve> {
     constructor(data: any, name?: string) { super(data, name || "valves"); }
     public createItem(data: any): Valve { return new Valve(data); }
+    public getIntake(): Valve[] {
+        let valves = this.data.filter(x => x.isIntake === true);
+        let ret = [];
+        for (let i = 0; i < valves.length; i++) {
+            ret.push(this.getItemById(valves[i].id));
+        }
+        return ret;
+    }
+    public getReturn(): Valve[] {
+        let valves = this.data.filter(x => x.isReturn === true);
+        let ret = [];
+        for (let i = 0; i < valves.length; i++) {
+            ret.push(this.getItemById(valves[i].id));
+        }
+        return ret;
+    }
 }
 export class Valve extends EqItem {
     public dataName = 'valveConfig';
@@ -1412,8 +1569,8 @@ export class Valve extends EqItem {
     public set isIntake(val: boolean) { this.setDataVal('isIntake', val); }
     public get isReturn(): boolean { return utils.makeBool(this.data.isReturn); }
     public set isReturn(val: boolean) { this.setDataVal('isReturn', val); }
-    public get isVirtual(): boolean { return utils.makeBool(this.data.isVirtual); }
-    public set isVirtual(val: boolean) { this.setDataVal('isVirtual', val); }
+    // public get isVirtual(): boolean { return utils.makeBool(this.data.isVirtual); }
+    // public set isVirtual(val: boolean) { this.setDataVal('isVirtual', val); }
     public get pinId(): number { return this.data.pinId || 0; }
     public set pinId(val: number) { this.setDataVal('pinId', val); }
     public get isActive(): boolean { return this.data.isActive; }
@@ -1432,14 +1589,33 @@ export class HeaterCollection extends EqItemCollection<Heater> {
         if (typeof add !== 'undefined' && add) return this.add(data || { id: this.data.length + 1, address: address });
         return this.createItem(data || { id: this.data.length + 1, address: address });
     }
+    public filter(f: (value: Heater, index?: any, array?: any[]) => boolean): HeaterCollection {
+        return new HeaterCollection({ heaters: this.data.filter(f) });
+    }
+
+    public getSolarHeaters(bodyId?: number): EqItemCollection<Heater> {
+        let htype = sys.board.valueMaps.heaterTypes.getValue('solar');
+        return new HeaterCollection(this.data.filter(x => {
+            if (x.type === htype) {
+                if (typeof bodyId !== 'undefined') {
+                    if (!x.isActive) return false;
+                    return (bodyId === x.body || (sys.equipment.shared && x.body === 32)) ? true : false;
+                }
+            }
+            return false;
+        }));
+    }
 }
 export class Heater extends EqItem {
     public dataName = 'heaterConfig';
     public initData() {
         if (typeof this.data.isActive === 'undefined') this.data.isActive = true;
+        if (typeof this.data.portId === 'undefined') this.data.portId = 0;
     }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
+    public get portId(): number { return this.data.portId; }
+    public set portId(val: number) { this.setDataVal('portId', val); }
     public get type(): number | any { return this.data.type; }
     public set type(val: number | any) { this.setDataVal('type', sys.board.valueMaps.heaterTypes.encode(val)); }
     public get name(): string { return this.data.name; }
@@ -1460,8 +1636,6 @@ export class Heater extends EqItem {
     public set efficiencyMode(val: number) { this.setDataVal('efficiencyMode', val); }
     public get isActive(): boolean { return this.data.isActive; }
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
-    public get isVirtual(): boolean { return this.data.isVirtual; }
-    public set isVirtual(val: boolean) { this.setDataVal('isVirtual', val); }
     public get coolingEnabled(): boolean { return this.data.coolingEnabled; }
     public set coolingEnabled(val: boolean) { this.setDataVal('coolingEnabled', val); }
     public get heatingEnabled(): boolean { return this.data.heatingEnabled; }
@@ -1474,6 +1648,8 @@ export class Heater extends EqItem {
     public set economyTime(val: number) { this.setDataVal('economyTime', val); }
     public get connectionId(): string { return this.data.connectionId; }
     public set connectionId(val: string) { this.setDataVal('connectionId', val); }
+    public get minCycleTime(): number { return this.data.minCycleTime; }
+    public set minCycleTime(val: number) { this.setDataVal('minCycleTime', val); }
     public get deviceBinding(): string { return this.data.deviceBinding; }
     public set deviceBinding(val: string) { this.setDataVal('deviceBinding', val); }
 }
@@ -1498,6 +1674,10 @@ export class Cover extends EqItem {
     public set normallyOn(val: boolean) { this.setDataVal('normallyOn', val); }
     public get circuits(): number[] { return this.data.circuits; }
     public set circuits(val: number[]) { this.setDataVal('circuits', val); }
+    public get chlorActive(): boolean { return this.data.chlorActive; }
+    public set chlorActive(val: boolean) { this.setDataVal('chlorActive', val); }
+    public get chlorOutput(): boolean { return this.data.chlorOutput; }
+    public set chlorOutput(val: boolean) { this.setDataVal('chlorOutput', val); }
 }
 export interface ICircuitGroup {
     id: number;
@@ -1602,7 +1782,61 @@ export class LightGroup extends EqItem implements ICircuitGroup, ICircuit {
     public get lightingTheme(): number | any { return this.data.lightingTheme; }
     public set lightingTheme(val: number | any) { this.setDataVal('lightingTheme', sys.board.valueMaps.lightThemes.encode(val)); }
     public get circuits(): LightGroupCircuitCollection { return new LightGroupCircuitCollection(this.data, "circuits"); }
-    public getLightThemes() { return sys.board.valueMaps.lightThemes.toArray(); }
+    public getLightThemes() {
+        // Go through the circuits and gather the themes.
+        // This method first looks at the circuits to determine their type (function)
+        // then it filters the list by the types associated with the circuits.  It does this because
+        // there can be combined ColorLogic and IntelliBrite lights.  The themes array has
+        // the circuit function.
+        let arrThemes = [];
+        for (let i = 0; i < this.circuits.length; i++) {
+            let circ = this.circuits.getItemByIndex(i);
+            let c = sys.circuits.getInterfaceById(circ.circuit);
+            let cf = sys.board.valueMaps.circuitFunctions.transform(c.type);
+            if (cf.isLight && typeof cf.theme !== 'undefined') {
+                if (!arrThemes.includes(cf.theme)) arrThemes.push(cf.theme);
+            }
+        }
+        // Alright now we need to get a listing of the themes.
+        let t = sys.board.valueMaps.lightThemes.toArray();
+        let ret = [];
+        for (let i = 0; i < t.length; i++) {
+            let thm = t[i];
+            if (typeof thm.types !== 'undefined' && thm.types.length > 0) {
+                // Look in the themes array of the theme.
+                if (arrThemes.some(x => thm.types.includes(x))) ret.push(thm);
+            }
+        }
+        return ret;
+    }
+    public getLightCommands() {
+        // Go through the circuits and gather the themes.
+        // This method first looks at the circuits to determine their type (function)
+        // then it filters the list by the types associated with the circuits.  It does this because
+        // there can be combined ColorLogic and IntelliBrite lights.  The themes array has
+        // the circuit function.
+        let arrThemes = [];
+        for (let i = 0; i < this.circuits.length; i++) {
+            let circ = this.circuits.getItemByIndex(i);
+            let c = sys.circuits.getInterfaceById(circ.circuit);
+            let cf = sys.board.valueMaps.circuitFunctions.transform(c.type);
+            if (cf.isLight && typeof cf.theme !== 'undefined') {
+                if (!arrThemes.includes(cf.theme)) arrThemes.push(cf.theme);
+            }
+        }
+        // Alright now we need to get a listing of the themes.
+        let t = sys.board.valueMaps.lightGroupCommands.toArray();
+        let ret = [];
+        for (let i = 0; i < t.length; i++) {
+            let cmd = t[i];
+            if (typeof cmd.types !== 'undefined' && cmd.types.length > 0) {
+                // Look in the themes array of the theme.
+                if (arrThemes.some(x => cmd.types.includes(x))) ret.push(cmd);
+            }
+        }
+        return ret;
+    }
+
     public getExtended() {
         let group = this.get(true);
         group.type = sys.board.valueMaps.circuitGroupTypes.transform(group.type);
@@ -1819,7 +2053,7 @@ export class ChemController extends EqItem {
         //var chemController = {
         //    id: 'number',               // Id of the controller
         //    name: 'string',             // Name assigned to the controller
-        //    type: 'valueMap',           // intellichem, homegrown, rem -- There is an unknown but that should probably go away.
+        //    type: 'valueMap',           // intellichem, rem -- There is an unknown but that should probably go away.
         //    body: 'valueMap',           // Body assigned to the chem controller.
         //    address: 'number',          // Address for IntelliChem controller only.
         //    isActive: 'booean',
@@ -1908,8 +2142,8 @@ export class ChemController extends EqItem {
     public set address(val: number) { this.setDataVal('address', val); }
     public get isActive(): boolean { return this.data.isActive; }
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
-    public get isVirtual(): boolean { return this.data.isVirtual; }
-    public set isVirtual(val: boolean) { this.setDataVal('isVirtual', val); }
+    // public get isVirtual(): boolean { return this.data.isVirtual; }
+    // public set isVirtual(val: boolean) { this.setDataVal('isVirtual', val); }
     public get calciumHardness(): number { return this.data.calciumHardness; }
     public set calciumHardness(val: number) { this.setDataVal('calciumHardness', val); }
     public get cyanuricAcid(): number { return this.data.cyanuricAcid; }
@@ -1931,7 +2165,7 @@ export class ChemController extends EqItem {
     public getExtended() {
         let chem = this.get(true);
         chem.type = sys.board.valueMaps.chemControllerTypes.transform(this.type);
-        chem.siCalcType = sys.board.valueMaps.siCalcTypes.transform(this.type);
+        chem.siCalcType = sys.board.valueMaps.siCalcTypes.transform(this.siCalcType || 0);
         chem.body = sys.board.valueMaps.bodies.transform(this.body);
         chem.ph = this.ph.getExtended();
         chem.orp = this.orp.getExtended();
@@ -1976,11 +2210,14 @@ export class Chemical extends ChildEqItem {
         if (typeof this.data.flowReadingsOnly === 'undefined') this.data.flowReadingsOnly = true;
         if (typeof this.data.flowOnlyMixing === 'undefined') this.data.flowOnlyMixing = true;
         if (typeof this.data.maxDailyVolume === 'undefined') this.data.maxDailyVolume = 500;
+        if (typeof this.data.disableOnFreeze === 'undefined') this.data.disableOnFreeze = true;
         super.initData();
     }
     public get chemType(): string { return this.data.chemType; }
     public get enabled(): boolean { return utils.makeBool(this.data.enabled); }
     public set enabled(val: boolean) { this.setDataVal('enabled', val); }
+    public get disableOnFreeze(): boolean { return utils.makeBool(this.data.disableOnFreeze); }
+    public set disableOnFreeze(val: boolean) { this.setDataVal('disableOnFreeze', val); }
     public get maxDosingTime(): number { return this.data.maxDosingTime; }
     public set maxDosingTime(val: number) { this.setDataVal('maxDosingTime', val); }
     public get maxDosingVolume(): number { return this.data.maxDosingVolume; }
@@ -1998,6 +2235,7 @@ export class Chemical extends ChildEqItem {
     public set startDelay(val: number) { this.setDataVal('startDelay', val); }
     public get pump(): ChemicalPump { return new ChemicalPump(this.data, 'pump', this); }
     public get tank(): ChemicalTank { return new ChemicalTank(this.data, 'tank', this); }
+    public get chlor(): ChemicalChlor { return new ChemicalChlor(this.data, 'chlor', this); }
     public get setpoint(): number { return this.data.setpoint; }
     public set setpoint(val: number) { this.setDataVal('setpoint', val); }
     public get tolerance(): AlarmSetting { return new AlarmSetting(this.data, 'tolerance', this); }
@@ -2020,6 +2258,7 @@ export class ChemicalPh extends Chemical {
         if (typeof this.data.acidType === 'undefined') this.data.acidType = 0;
         if (typeof this.data.tolerance === 'undefined') this.data.tolerance = { low: 7.2, high: 7.6, enabled: true };
         if (typeof this.data.dosePriority === 'undefined') this.data.dosePriority = true;
+        if (typeof this.data.doserType === 'undefined') this.data.doserType = 0;
         super.initData();
     }
     public get phSupply(): number | any { return this.data.phSupply; }
@@ -2028,11 +2267,14 @@ export class ChemicalPh extends Chemical {
     public set acidType(val: number | any) { this.setDataVal('acidType', sys.board.valueMaps.acidTypes.encode(val)); }
     public get dosePriority(): boolean { return this.data.dosePriority; }
     public set dosePriority(val: boolean) { this.setDataVal('dosePriority', val); }
+    public get doserType(): number | any { return this.data.doserType; }
+    public set doserType(val: number | any) { this.setDataVal('doserType', sys.board.valueMaps.phDoserTypes.encode(val)); }
     public get probe(): ChemicalPhProbe { return new ChemicalPhProbe(this.data, 'probe', this); }
     public getExtended() {
         let chem = super.getExtended();
         chem.probe = this.probe.getExtended();
         chem.phSupply = sys.board.valueMaps.phSupplyTypes.transform(this.phSupply);
+        chem.doserType = sys.board.valueMaps.phDoserTypes.transform(this.doserType);
         return chem;
     }
 }
@@ -2041,9 +2283,11 @@ export class ChemicalORP extends Chemical {
         this.data.chemType = 'orp';
         if (typeof this.data.setpoint === 'undefined') this.data.setpoint = 600;
         if (typeof this.data.useChlorinator === 'undefined') this.data.useChlorinator = false;
+        if (typeof this.data.chlorDosingMethod === 'undefined') this.data.chlorDosingMethod = 0;
         if (typeof this.data.probe === 'undefined') this.data.probe = {};
         if (typeof this.data.tolerance === 'undefined') this.data.tolerance = { low: 650, high: 800, enabled: true };
         if (typeof this.data.phLockout === 'undefined') this.data.phLockout = 7.8;
+        if (typeof this.data.doserType === 'undefined') this.data.doserType = 0;
         super.initData();
     }
     public get useChlorinator(): boolean { return utils.makeBool(this.data.useChlorinator); }
@@ -2051,9 +2295,15 @@ export class ChemicalORP extends Chemical {
     public get phLockout(): number { return this.data.phLockout; }
     public set phLockout(val: number) { this.setDataVal('phLockout', val); }
     public get probe(): ChemicalORPProbe { return new ChemicalORPProbe(this.data, 'probe', this); }
+    public get chlorDosingMethod(): number | any { return this.data.chlorDosingMethod; }
+    public set chlorDosingMethod(val: number | any) { this.setDataVal('chlorDosingMethod', sys.board.valueMaps.chemChlorDosingMethods.encode(val)); }
+    public get doserType(): number | any { return this.data.doserType; }
+    public set doserType(val: number | any) { this.setDataVal('doserType', sys.board.valueMaps.orpDoserTypes.encode(val)); }
+
     public getExtended() {
         let chem = super.getExtended();
         chem.probe = this.probe.getExtended();
+        chem.doserType = sys.board.valueMaps.orpDoserTypes.transform(this.doserType);
         return chem;
     }
 }
@@ -2067,6 +2317,11 @@ export class Filter extends EqItem {
         if (typeof this.data.filterType === 'undefined') this.data.filterType = 3;
         if (typeof this.data.capacity === 'undefined') this.data.capacity = 0;
         if (typeof this.data.capacityUnits === 'undefined') this.data.capacityUnits = 0;
+        if (typeof this.data.cleanPressure === 'undefined') this.data.cleanPressure = 0;
+        if (typeof this.data.dirtyPressure === 'undefined') this.data.dirtyPressure = 0;
+        if (typeof this.data.pressureUnits === 'undefined') this.data.pressureUnits = 0;
+        // Start this out at pool and let the user switch it around if necessary.
+        if (typeof this.data.pressureCircuitId === 'undefined') this.data.pressureCircuitId = 6;
     }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
@@ -2082,10 +2337,22 @@ export class Filter extends EqItem {
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
     public get name(): string { return this.data.name; }
     public set name(val: string) { this.setDataVal('name', val); }
+
+    public get showPressure(): boolean { return this.data.showPressure; }
+    public set showPressure(val: boolean) { this.setDataVal('showPressure', val); }
     public get lastCleanDate(): Timestamp { return this.data.lastCleanDate; }
     public set lastCleanDate(val: Timestamp) { this.setDataVal('lastCleanDate', val); }
     public get needsCleaning(): number { return this.data.needsCleaning; }
     public set needsCleaning(val: number) { this.setDataVal('needsCleaning', val); }
+    public get pressureUnits(): number { return this.data.pressureUnits; }
+    public set pressureUnits(val: number) { this.setDataVal('pressureUnits', val); }
+    public get pressureCircuitId(): number { return this.data.pressureCircuitId; }
+    public set pressureCircuitId(val: number) { this.setDataVal('pressureCircuitId', val); }
+    public get cleanPressure(): number { return this.data.cleanPressure; }
+    public set cleanPressure(val: number) { this.setDataVal('cleanPressure', val); }
+    public get dirtyPressure(): number { return this.data.dirtyPressure; }
+    public set dirtyPressure(val: number) { this.setDataVal('dirtyPressure', val); }
+
     public get connectionId(): string { return this.data.connectionId; }
     public set connectionId(val: string) { this.setDataVal('connectionId', val); }
     public get deviceBinding(): string { return this.data.deviceBinding; }
@@ -2165,6 +2432,41 @@ export class ChemicalTank extends ChildEqItem {
         let tank = this.get(true);
         tank.units = sys.board.valueMaps.volumeUnits.transform(this.units);
         return tank;
+    }
+}
+export class ChemicalChlor extends ChildEqItem {
+    // This whole class is a reference to the first chlorinator.
+    // This may not follow a best practice
+    // and certainly won't work for multiple chlors
+    public dataName = 'chemicalChlorConfig';
+    public initData() {
+        super.initData();
+    }
+    public get enabled(): boolean {
+        let chlor = sys.chlorinators.getItemById(1);
+        return chlor.isActive;
+    }
+    public get type(): number | any {
+        let chlor = sys.chlorinators.getItemById(1);
+        return chlor.type;
+    }
+    public get model(): number {
+        let chlor = sys.chlorinators.getItemById(1);
+        return typeof chlor.model !== 'undefined' ? chlor.model : 0;
+    }
+    public get ratedLbs(): number {
+        let model = sys.board.valueMaps.chlorinatorModel.get(this.model);
+        return typeof model.chlorinePerSec !== 'undefined' ? model.chlorinePerSec : 0;
+    }
+    public set ratedLbs(val: number) { this.setDataVal('ratedLbs', val); }
+    public get superChlor() {
+        let chlor = sys.chlorinators.getItemById(1);
+        return typeof chlor.superChlor !== 'undefined' ? chlor.superChlor : false;
+    }
+    public getExtended() {
+        let chlor = this.get(true);
+        chlor.model = sys.board.valueMaps.chlorinatorModel.transform(this.model);
+        return chlor;
     }
 }
 export class AlarmSetting extends ChildEqItem {

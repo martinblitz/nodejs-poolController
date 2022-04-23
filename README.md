@@ -1,4 +1,4 @@
-# nodejs-poolController - Version 7.2.0
+# nodejs-poolController - Version 7.6
 
 ## What is nodejs-poolController
 
@@ -15,13 +15,13 @@ Equipment supported
 1. Pumps: Intelliflow VS/VSF/VF, older models
 1. Chlorinators: Intellichlor, Aqua-Rite and OEM brands
 1. Heaters: Gas, solar, heatpump
-1. Intellichem and homegrown chemical controllers
+1. Intellichem and Relay Equipment Manager (REM) chemical controllers
 1. Intellivalve (coming soon)
 1. Home Automation:  SmartThings, Hubitat, ISY, Vera, Siri, Echo
 1. Chemical probes (pH, ORP, flow sensors, EC, etc.)
 
 ## Latest Changes
-See (Changelog)[https://github.com/tagyoureit/nodejs-poolController/blob/master/Changelog)
+See [Changelog](https://github.com/tagyoureit/nodejs-poolController/blob/master/Changelog)
 
 ## What's new in 7.0?
 
@@ -48,12 +48,10 @@ If you don't know anything about NodeJS, these directions might be helpful.
 1. Install Nodejs (v12 recommended). (https://nodejs.org/en/download/)
 1. Update NPM (https://docs.npmjs.com/getting-started/installing-node).
 1. It is recommended to clone the source code as updates are frequently pushed while releases are infrequent
-   
-   Download the latest [code release](https://github.com/tagyoureit/nodejs-poolController/releases)
-   OR
-   clone with `git clone git@github.com:tagyoureit/nodejs-poolController.git`
-1. Unzip into nodejs-poolController.
-1. Run 'npm install' in the new folder (where package.json exists).  This will automatically install all the dependencies (serial-port, express, sockets.io, etc).
+   clone with `git clone https://github.com/tagyoureit/nodejs-poolController.git`
+   (Alternate - not recommended - Download the latest [code release](https://github.com/tagyoureit/nodejs-poolController/releases)
+1. Change directory into nodejs-poolController.
+1. Run `npm install` in the new folder (where package.json exists).  This will automatically install all the dependencies (serial-port, express, sockets.io, etc).
 1. Run the app with `npm start`.
    * `npm start` will compile the Typescript code.  You should use this every time you download/clone/pull the latest code.
    * `npm run start:cached` will run the app without compiling the code which can be much faster.
@@ -62,6 +60,13 @@ If you don't know anything about NodeJS, these directions might be helpful.
 1. Install a [webclient](module_nodejs-poolController--clients) for a browser experience and/or a [binding](module_nodejs-poolController--bindings) to have two way control with Home Automation systems.
 
 For a very thorough walk-through, see [this](https://www.troublefreepool.com/threads/pentair-intellicenter-pool-control-dashboard-instructional-guide.218514/) great thread on Trouble Free Pool.  Thanks @MyAZPool.
+
+#### Upgrade Instructions
+Assuming you cloned the repo, the following are easy steps to get the latest version:
+1. Change directory to the njsPC app
+2. `git pull`
+3. `npm i` (not always necessary, but if dependencies are upgraded this will bring them up to date)
+4. Start application as normal, or if using `npm run start:cached` then run `npm run build` to compile the code.
 
 ### Docker instructions
 
@@ -84,8 +89,8 @@ To do anything with this app, you need a client to connect to it.  A client can 
 * Temperature sensors (10k, NTC)
 
 ## Web Clients
-1. RECOMMENDED - [nodejs-poolController-dashPanel](https://github.com/rstrouse/nodejs-poolController-dashPanel).  Full compatibility with IntelliCenter, *Touch, REM (RelayEquipmentManager).
-1. Limited functionality - [nodejs-poolController-webClient](http://github.com/tagyoureit/nodejs-poolController-webClient).  Built primarily around EasyTouch/IntelliTouch but will work with other systems.
+1. [nodejs-poolController-dashPanel](https://github.com/rstrouse/nodejs-poolController-dashPanel).  Full compatibility with IntelliCenter, *Touch, REM (RelayEquipmentManager).
+1. Deprecated - ~~[nodejs-poolController-webClient](http://github.com/tagyoureit/nodejs-poolController-webClient).  Built primarily around EasyTouch/IntelliTouch but will work with other systems.~~
 
 * This app has the default to only listen to clients from localhost (127.0.0.1).  If you need to have clients connect from other machines you will need to change the [ip](#module_nodejs-poolController--config.json) in `config.json`.
 
@@ -108,7 +113,7 @@ Need to be updated:
 * [ISY Polyglot NodeServer](https://github.com/brianmtreese/nodejs-pool-controller-polyglotv2) created by @brianmtreese
 
 # Support
-1. For discussions, recommendations, designs, and clarifications, we recommend you join our [Gitter Chat room](https://gitter.im/pentair_pool/Lobby).
+1. For discussions, recommendations, designs, and clarifications, we recommend you join the [Github discussions](https://github.com/tagyoureit/nodejs-poolController/discussions or [Gitter Chat room](https://gitter.im/pentair_pool/Lobby).
 1. Check the [wiki](https://github.com/tagyoureit/nodejs-poolController/wiki) for tips, tricks and additional documentation.
 1. For bug reports you can open a [github issue](https://github.com/tagyoureit/nodejs-poolController/issues/new),
 
