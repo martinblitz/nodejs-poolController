@@ -1,10 +1,10 @@
 #!/bin/bash
 
-read HA_NAME < HOME_ASSISTANT_NAME
-read HA_VERSION < HOME_ASSISTANT_VERSION
+read PC_NAME < POOLCONTROLLER_NAME
+read PC_VERSION < POOLCONTROLLER_VERSION
 
-echo pushing ${HA_NAME}:${HA_VERSION}
+echo pushing ${PC_NAME}:${PC_VERSION}
 
-docker push ${HA_NAME}:${HA_VERSION}
-docker push ${HA_NAME}:latest
+docker push ${PC_NAME}:${PC_VERSION}
+docker push ${PC_NAME}:latest
 

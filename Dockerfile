@@ -3,7 +3,7 @@ USER root
 WORKDIR /home/app
 COPY ./package.json /home/app/package.json
 RUN apt-get update ; apt-get -y upgrade
-RUN apt-get -y install curl gnupg make g++ python udev tzdata
+RUN apt-get -y install curl gnupg make g++ python3 udev tzdata
 RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash -
 RUN apt-get install -y nodejs
 RUN npm install -g npm
