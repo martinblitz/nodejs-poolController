@@ -10,8 +10,6 @@ import { ChemControllerState, ChemicalChlorState, ChemicalDoseState, ChemicalORP
 import { ncp } from '../Nixie';
 import { INixieControlPanel, NixieChildEquipment, NixieEquipment, NixieEquipmentCollection } from "../NixieEquipment";
 import { NixieChlorinator } from './Chlorinator';
-
-
 export class NixieChemControllerCollection extends NixieEquipmentCollection<NixieChemControllerBase> {
     public async manualDoseAsync(id: number, data: any) {
         try {
@@ -100,6 +98,17 @@ export class NixieChemControllerCollection extends NixieEquipmentCollection<Nixi
 
         } catch (err) { } // Don't bail if we have an error
     }
+    public async setServiceModeAsync() {
+        try {
+            for (let i = this.length - 1; i >= 0; i--) {
+                try {
+                    let cc = this[i] as NixieChemControllerBase;
+                    await cc.setServiceModeAsync();
+                } catch (err) { logger.error(`Error setting Chem Controller to service mode ${err}`); return Promise.reject(err); }
+            }
+        } catch (err) { } // Don't bail if we have an error
+    }
+
     public async deleteChlorAsync(chlor: NixieChlorinator) {
         // if we delete the chlor, make sure it is removed from all REM Chem Controllers
         try {
@@ -159,6 +168,7 @@ export class NixieChemControllerBase extends NixieEquipment {
     }
     public chem: ChemController;
     public syncRemoteREMFeeds(servers) { }
+    public async setServiceModeAsync() {}
     public static create(ncp: INixieControlPanel, chem: ChemController): NixieChemControllerBase {
         let type = sys.board.valueMaps.chemControllerTypes.transform(chem.type);
         switch (type.name) {
@@ -209,6 +219,7 @@ export class NixieIntelliChemController extends NixieChemControllerBase {
         catch (err) { logger.error(`Error polling IntelliChem Controller - ${err}`); return Promise.reject(err); }
         finally { this.suspendPolling = false; if (!this.closing) this._pollTimer = setTimeout(() => { self.pollEquipmentAsync(); }, this.pollingInterval || 10000); }
     }
+    public async setServiceModeAsync() {}
     public async setControllerAsync(data: any) {
         try {
             this.suspendPolling = true;
@@ -419,6 +430,11 @@ export class NixieChemController extends NixieChemControllerBase {
             }
         }
     }
+    public async setServiceModeAsync() {
+        let schem = state.chemControllers.getItemById(this.chem.id);
+        if(this.chem.ph.enabled) await this.ph.cancelDosing(schem.ph, 'service mode');
+        if(this.chem.orp.enabled) await this.orp.cancelDosing(schem.orp, 'service mode');
+    }
     public async manualDoseAsync(data: any) {
         try {
             this.suspendPolling = true;
@@ -608,8 +624,10 @@ export class NixieChemController extends NixieChemControllerBase {
                     // Check each piece of equipment to make sure it is doing its thing.
                     schem.calculateSaturationIndex();
                     this.processAlarms(schem);
-                    if (this.chem.ph.enabled) await this.ph.checkDosing(this.chem, schem.ph);
-                    if (this.chem.orp.enabled) await this.orp.checkDosing(this.chem, schem.orp);
+                    if (state.mode === 0) {
+                        if (this.chem.ph.enabled) await this.ph.checkDosing(this.chem, schem.ph);
+                        if (this.chem.orp.enabled) await this.orp.checkDosing(this.chem, schem.orp);
+                    }
                 }
                 else
                     logger.warn('REM Server not Connected');
@@ -642,11 +660,11 @@ export class NixieChemController extends NixieChemControllerBase {
             let chem = this.chem;
             schem.orp.enabled = this.chem.orp.enabled;
             schem.ph.enabled = this.chem.ph.enabled;
+            let probeType = chem.orp.probe.type;
             if (this.chem.orp.enabled) {
 
                 let useChlorinator = chem.orp.useChlorinator;
                 let pumpType = chem.orp.pump.type;
-                let probeType = chem.orp.probe.type;
                 let currLevelPercent = schem.orp.tank.level / schem.orp.tank.capacity * 100;
                 if (pumpType !== 0) {
                     if (currLevelPercent <= 0) schem.alarms.orpTank = 64;
@@ -681,13 +699,17 @@ export class NixieChemController extends NixieChemControllerBase {
                 schem.warnings.chlorinatorCommError = 0;
                 schem.alarms.orpTank = 0;
                 schem.warnings.orpDailyLimitReached = 0;
-                schem.alarms.orp = 0;
+                // RSG 5-22-22 below block will allow a user to have an orp probe without enabling orp output
+                if (probeType !== 0 && chem.orp.tolerance.enabled){
+                    schem.alarms.orp = schem.orp.level < chem.orp.tolerance.low ? 16 : schem.orp.level > chem.orp.tolerance.high ? 8 : 0;
+                }
+                else schem.alarms.orp = 0;
                 schem.warnings.pHLockout = 0;
                 schem.orp.freezeProtect = false;
             }
+            probeType = chem.ph.probe.type;
             if (this.chem.ph.enabled) {
                 let pumpType = chem.ph.pump.type;
-                let probeType = chem.ph.probe.type;
                 let currLevelPercent = schem.ph.tank.level / schem.ph.tank.capacity * 100;
                 if (pumpType !== 0) {
                     if (currLevelPercent <= 0) schem.alarms.pHTank = 32;
@@ -714,10 +736,15 @@ export class NixieChemController extends NixieChemControllerBase {
                 else schem.alarms.pH = 0;
                 schem.ph.freezeProtect = (state.freeze && chem.ph.disableOnFreeze && schem.isBodyOn);
             }
+
             else {
                 schem.alarms.pHTank = 0;
                 schem.warnings.pHDailyLimitReached = 0;
-                schem.alarms.pH = 0;
+                // RSG 5-22-22 Below block will allow user to have a pH probe without enabling pH control
+                if (probeType !== 0 && chem.ph.tolerance.enabled) {
+                    schem.alarms.pH = schem.ph.level < chem.ph.tolerance.low ? 4 : schem.ph.level > chem.ph.tolerance.high ? 2 : 0;
+                }
+                else schem.alarms.pH = 0;
                 schem.ph.freezeProtect = false;
             }
             

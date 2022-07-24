@@ -505,6 +505,8 @@ export interface ICircuitState {
     isActive?: boolean;
     startDelay?: boolean;
     stopDelay?: boolean;
+    manualPriorityActive?: boolean;
+    dataName?: string;
 }
 
 interface IEqStateCreator<T> { ctor(data: any, name: string, parent?): T; }
@@ -639,6 +641,10 @@ class EqStateCollection<T> {
         }
         return rem;
     }
+    public removeItemByIndex(ndx: number) {
+        return this.data.splice(ndx, 1);
+    }
+
     public createItem(data: any): T { return new EqState(data) as unknown as T; }
     public clear() { this.data.length = 0; }
     public get length(): number { return typeof (this.data) !== 'undefined' ? this.data.length : 0; }
@@ -730,6 +736,8 @@ export class EquipmentState extends EqState {
     public set name(val: string) { this.setDataVal('name', val); }
     public get model(): string { return this.data.model; }
     public set model(val: string) { this.setDataVal('model', val); }
+    public get single(): boolean { return this.data.single; }
+    public set single(val: boolean) { this.setDataVal('single', val); }
     public get shared(): boolean { return this.data.shared; }
     public set shared(val: boolean) { this.setDataVal('shared', val); }
     public get dual(): boolean { return this.data.dual; }
@@ -910,15 +918,18 @@ export class PumpState extends EqState {
     public get name(): string { return this.data.name; }
     public set name(val: string) { this.setDataVal('name', val); }
     public get rpm(): number { return this.data.rpm; }
-    public set rpm(val: number) { this.setDataVal('rpm', val, this.exceedsThreshold(this.data.rpm, val)); }
+    public set rpm(val: number) { this.setDataVal('rpm', val); }
+    //public set rpm(val: number) { this.setDataVal('rpm', val, this.exceedsThreshold(this.data.rpm, val)); }
     public get relay(): number { return this.data.relay; }
     public set relay(val: number) { this.setDataVal('relay', val); }
     public get program(): number { return this.data.program; }
     public set program(val: number) { this.setDataVal('program', val); }
     public get watts(): number { return this.data.watts; }
-    public set watts(val: number) { this.setDataVal('watts', val, this.exceedsThreshold(this.data.watts, val)); }
+    public set watts(val: number) { this.setDataVal('watts', val); }
+    //public set watts(val: number) { this.setDataVal('watts', val, this.exceedsThreshold(this.data.watts, val)); }
     public get flow(): number { return this.data.flow; }
-    public set flow(val: number) { this.setDataVal('flow', val, this.exceedsThreshold(this.data.flow, val)); }
+    public set flow(val: number) { this.setDataVal('flow', val); }
+    //public set flow(val: number) { this.setDataVal('flow', val, this.exceedsThreshold(this.data.flow, val)); }
     public get mode(): number { return this.data.mode; }
     public set mode(val: number) { this.setDataVal('mode', val); }
     public get driveState(): number { return this.data.driveState; }
@@ -1121,6 +1132,8 @@ export class ScheduleState extends EqState {
     public set coolSetpoint(val: number) { this.setDataVal('coolSetpoint', val); }
     public get isOn(): boolean { return this.data.isOn; }
     public set isOn(val: boolean) { this.setDataVal('isOn', val); }
+    public get manualPriorityActive(): boolean { return this.data.manualPriorityActive; }
+    public set manualPriorityActive(val: boolean) { this.setDataVal('manualPriorityActive', val); }
     public getExtended() {
         let sched = this.get(true); // Always operate on a copy.
         //if (typeof this.circuit !== 'undefined')
@@ -1148,6 +1161,7 @@ export interface ICircuitGroupState {
     dataName: string;
     lightingTheme?: number;
     showInFeatures?: boolean;
+    manualPriorityActive?: boolean;
     get(bCopy?: boolean);
     emitEquipmentChange();
 }
@@ -1204,10 +1218,15 @@ export class CircuitGroupState extends EqState implements ICircuitGroupState, IC
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
     public get showInFeatures(): boolean { return typeof this.data.showInFeatures === 'undefined' ? true : this.data.showInFeatures; }
     public set showInFeatures(val: boolean) { this.setDataVal('showInFeatures', val); }
+    public get manualPriorityActive(): boolean { return this.data.manualPriorityActive; }
+    public set manualPriorityActive(val: boolean) { this.setDataVal('manualPriorityActive', val); }
     public getExtended() {
         let sgrp = this.get(true); // Always operate on a copy.
         if (typeof sgrp.showInFeatures === 'undefined') sgrp.showInFeatures = true;
+        
         let cgrp = sys.circuitGroups.getItemById(this.id);
+        sgrp.showInFeatures = this.showInFeatures = cgrp.showInFeatures;
+        sgrp.isActive = this.isActive = cgrp.isActive;
         sgrp.circuits = [];
         for (let i = 0; i < cgrp.circuits.length; i++) {
             let cgc = cgrp.circuits.getItemByIndex(i).get(true);
@@ -1288,6 +1307,8 @@ export class LightGroupState extends EqState implements ICircuitGroupState, ICir
     public set isOn(val: boolean) { this.setDataVal('isOn', val); }
     public get isActive(): boolean { return this.data.isActive; }
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
+    public get manualPriorityActive(): boolean { return this.data.manualPriorityActive; }
+    public set manualPriorityActive(val: boolean) { this.setDataVal('manualPriorityActive', val); }
     public async setThemeAsync(val: number) { return sys.board.circuits.setLightThemeAsync; }
     public getExtended() {
         let sgrp = this.get(true); // Always operate on a copy.
@@ -1605,6 +1626,8 @@ export class FeatureState extends EqState implements ICircuitState {
     public set freezeProtect(val: boolean) { this.setDataVal('freezeProtect', val); }
     public get isActive(): boolean { return this.data.isActive; }
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
+    public get manualPriorityActive(): boolean { return this.data.manualPriorityActive; }
+    public set manualPriorityActive(val: boolean) { this.setDataVal('manualPriorityActive', val); }
 }
 export class VirtualCircuitState extends EqState implements ICircuitState {
     public dataName: string = 'virtualCircuit';
@@ -1751,6 +1774,8 @@ export class CircuitState extends EqState implements ICircuitState {
     public set lockoutOn(val: boolean) { this.setDataVal('lockoutOn', val); }
     public get lockoutOff(): boolean { return this.data.lockoutOff; }
     public set lockoutOff(val: boolean) { this.setDataVal('lockoutOff', val); }
+    public get manualPriorityActive(): boolean { return this.data.manualPriorityActive; }
+    public set manualPriorityActive(val: boolean) { this.setDataVal('manualPriorityActive', val); }
 }
 export class ValveStateCollection extends EqStateCollection<ValveState> {
     public createItem(data: any): ValveState { return new ValveState(data); }
@@ -1827,7 +1852,7 @@ export class CoverState extends EqState {
     public set isClosed(val: boolean) { this.setDataVal('isClosed', val); }
 }
 export class ChlorinatorStateCollection extends EqStateCollection<ChlorinatorState> {
-    public superChlor: { id:number, lastDispatch: number, reference: number }[] = [];
+    public superChlor: { id: number, lastDispatch: number, reference: number }[] = [];
     public getSuperChlor(id: number): { id: number, lastDispatch: number, reference: number } {
         let sc = this.superChlor.find(elem => id === elem.id);
         if (typeof sc === 'undefined') {
@@ -1922,32 +1947,15 @@ export class ChlorinatorState extends EqState {
     public set spaSetpoint(val: number) { this.setDataVal('spaSetpoint', val); }
     public get superChlorHours(): number { return this.data.superChlorHours; }
     public set superChlorHours(val: number) { this.setDataVal('superChlorHours', val); }
+    public get saltTarget(): number { return this.data.saltTarget; }
+    public set saltTarget(val: number) { this.setDataVal('saltTarget', val); }
     public get saltRequired(): number { return this.data.saltRequired; }
     public get saltLevel(): number { return this.data.saltLevel; }
     public set saltLevel(val: number) {
-        this.setDataVal('saltLevel', val);
-        //this.data.saltLevel = val;
-        // Calculate the salt required.
-        let capacity = 0;
-        for (let i = 0; i < sys.bodies.length; i++) {
-            let body = sys.bodies.getItemById(i + 1);
-            if (this.body === 32)
-                capacity = Math.max(body.capacity, capacity);
-            else if (this.body === 0 && body.id === 1)
-                capacity = Math.max(body.capacity, capacity);
-            else if (this.body === 1 && body.id === 2)
-                capacity = Math.max(body.capacity, capacity);
+        if (this.saltLevel !== val) {
+            this.setDataVal('saltLevel', val);
+            this.calcSaltRequired();
         }
-        if (capacity > 0 && this.saltLevel < 3100) {
-            // Salt requirements calculation.
-            // Target - SaltLevel = NeededSalt = 3400 - 2900 = 500ppm
-            // So to raise 120ppm you need to add 1lb per 1000 gal.
-            // (NeededSalt/120ppm) * (MaxBody/1000) = (500/120) * (33000/1000) = 137.5lbs of salt required to hit target.
-            let dec = Math.pow(10, 2);
-            this.data.saltRequired = Math.round((((3400 - this.saltLevel) / 120) * (capacity / 1000)) * dec) / dec;
-        }
-        else
-            this.data.saltRequired = 0;
     }
     public get superChlor(): boolean { return this.data.superChlor; }
     public set superChlor(val: boolean) {
@@ -2010,9 +2018,38 @@ export class ChlorinatorState extends EqState {
         this.setDataVal('superChlor', remaining > 0);
         chlor.superChlor = remaining > 0;
     }
+    public calcSaltRequired(saltTarget?: number) : number {
+        if (typeof saltTarget === 'undefined') saltTarget = sys.chlorinators.getItemById(this.id, false).saltTarget || 0;
+        let saltRequired = 0;
+        //this.data.saltLevel = val;
+        // Calculate the salt required.
+        let capacity = 0;
+        for (let i = 0; i < sys.bodies.length; i++) {
+            let body = sys.bodies.getItemById(i + 1);
+            if (this.body === 32)
+                capacity = Math.max(body.capacity, capacity);
+            else if (this.body === 0 && body.id === 1)
+                capacity = Math.max(body.capacity, capacity);
+            else if (this.body === 1 && body.id === 2)
+                capacity = Math.max(body.capacity, capacity);
+        }
+        if (capacity > 0 && this.saltLevel < saltTarget) {
+            // Salt requirements calculation.
+            // Target - SaltLevel = NeededSalt = 3400 - 2900 = 500ppm
+            // So to raise 120ppm you need to add 1lb per 1000 gal.
+            // (NeededSalt/120ppm) * (MaxBody/1000) = (500/120) * (33000/1000) = 137.5lbs of salt required to hit target.
+            let dec = Math.pow(10, 2);
+            saltRequired = Math.round((((saltTarget - this.saltLevel) / 120) * (capacity / 1000)) * dec) / dec;
+            if (this.saltRequired < 0) saltRequired = 0;
+        }
+        this.setDataVal('saltRequired', saltRequired);
+        return saltRequired;
+    }
+    public getEmitData() { return this.getExtended(); }
     public getExtended(): any {
         let schlor = this.get(true);
         let chlor = sys.chlorinators.getItemById(this.id, false);
+        schlor.saltTarget = chlor.saltTarget;
         schlor.lockSetpoints = chlor.disabled || chlor.isDosing;
         return schlor;
     }
@@ -2499,13 +2536,27 @@ export class ChemicalPhState extends ChemicalState {
         // Calculate how many mL are required to raise to our pH level.
         // 1. Get the total gallons of water that the chem controller is in
         // control of.
+        // 2. RSG 5-22-22 - If the spa is on, calc demand only based on the spa volume.  Otherwise, long periods of spa usage
+        // will result in an overdose if pH is high.
         let totalGallons = 0;
+        // The bodyIsOn code was throwing an exception whenver no bodies were on.
+        if (chem.body === 32 && sys.equipment.shared) {
+            // We are shared and when body 2 (spa) is on body 1 (pool) is off.
+            if (state.temps.bodies.getItemById(2).isOn === true) totalGallons = sys.bodies.getItemById(2).capacity;
+            else totalGallons = sys.bodies.getItemById(1).capacity + sys.bodies.getItemById(2).capacity;
+        }
+        else {
+            // These are all single body implementations so we simply match to the body.
+            totalGallons = sys.bodies.getItemById(chem.body + 1).capacity;
+        }
 
-        if (chem.body === 0 || chem.body === 32 || sys.equipment.shared) totalGallons += sys.bodies.getItemById(1).capacity;
-        if (chem.body === 1 || chem.body === 32 || sys.equipment.shared) totalGallons += sys.bodies.getItemById(2).capacity;
-        if (chem.body === 2) totalGallons += sys.bodies.getItemById(3).capacity;
-        if (chem.body === 3) totalGallons += sys.bodies.getItemById(4).capacity;
-        logger.verbose(`Chem begin calculating ${this.chemType} demand: ${this.level} setpoint: ${this.setpoint} body: ${totalGallons}`);
+        //if (chem.body === 0 || chem.body === 32 || sys.equipment.shared) totalGallons += sys.bodies.getItemById(1).capacity;
+        //let bodyIsOn = state.temps.bodies.getBodyIsOn();
+        //if (bodyIsOn.circuit === 1 && sys.circuits.getInterfaceById(bodyIsOn.circuit).type === sys.board.valueMaps.circuitFunctions.getValue('spa') && (chem.body === 1 || chem.body === 32 || sys.equipment.shared)) totalGallons = sys.bodies.getItemById(2).capacity;
+        //else  if (chem.body === 1 || chem.body === 32 || sys.equipment.shared) totalGallons += sys.bodies.getItemById(2).capacity;
+        //if (chem.body === 2) totalGallons += sys.bodies.getItemById(3).capacity;
+        //if (chem.body === 3) totalGallons += sys.bodies.getItemById(4).capacity;
+        logger.verbose(`Chem begin calculating ${this.chemType} demand: ${this.level} setpoint: ${this.setpoint} total gallons: ${totalGallons}`);
         let chg = this.setpoint - this.level;
         let delta = chg * totalGallons;
         let temp = (this.level + this.setpoint) / 2;

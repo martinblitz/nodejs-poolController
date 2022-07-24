@@ -164,6 +164,11 @@ export class PoolSystem implements IPoolSystem {
         EqItemCollection.removeNullIds(cfg.remotes);
         EqItemCollection.removeNullIds(cfg.chemControllers);
         EqItemCollection.removeNullIds(cfg.filters);
+        if (typeof cfg.pumps !== 'undefined') {
+            for (let i = 0; i < cfg.pumps.length; i++) {
+                EqItemCollection.removeNullIds(cfg.pumps[i].circuits);
+            }
+        }
         this.data = this.onchange(cfg, function () { sys.dirty = true; });
         this.general = new General(this.data, 'pool');
         this.equipment = new Equipment(this.data, 'equipment');
@@ -218,7 +223,7 @@ export class PoolSystem implements IPoolSystem {
     public set controllerType(val: ControllerType) {
         let self = this;
         if (this.controllerType !== val || this.controllerType === ControllerType.Virtual) {
-            console.log('RESETTING DATA -- Data files backed up to ./logs directory.');
+            console.log(`RESETTING DATA -- Controller type changed from ${this.controllerType} to ${val}`);
             // Only go in here if there is a change to the controller type.
             this.resetData(); // Clear the configuration data.
             state.resetData(); // Clear the state data.
@@ -527,7 +532,9 @@ class EqItemCollection<T> implements IEqItemCollection {
     public static removeNullIds(data: any) {
         if (typeof data !== 'undefined' && Array.isArray(data) && typeof data.length === 'number') {
             for (let i = data.length - 1; i >= 0; i--) {
-                if (typeof data[i].id !== 'number') data.splice(i, 1);
+                if (typeof data[i].id !== 'number') {
+                    data.splice(i, 1);
+                }
                 else if (typeof data[i].id === 'undefined' || isNaN(data[i].id)) data.splice(i, 1);
             }
         }
@@ -874,11 +881,19 @@ export class ExpansionPanel extends EqItem {
 export class Equipment extends EqItem {
     public dataName = 'equipmentConfig';
     public initData() {
+        if (typeof this.data.single === 'undefined') {
+            if (this.data.dual === true || this.data.shared === true) this.data.single = false;
+            else if (sys.controllerType !== ControllerType.IntelliTouch) this.data.single = true;
+        }
+        if (typeof this.data.softwareVersion === 'undefined') this.data.softwareVersion = '';
+        if (typeof this.data.bootloaderVersion === 'undefined') this.data.bootloaderVersion = '';
     }
     public get name(): string { return this.data.name; }
     public set name(val: string) { this.setDataVal('name', val); }
     public get type(): number { return this.data.type; }
     public set type(val: number) { this.setDataVal('type', val); }
+    public get single(): boolean { return this.data.single; }
+    public set single(val: boolean) { this.setDataVal('single', val); }
     public get shared(): boolean { return this.data.shared; }
     public set shared(val: boolean) { this.setDataVal('shared', val); }
     public get dual(): boolean { return this.data.dual; }
@@ -1021,7 +1036,7 @@ export class BodyCollection extends EqItemCollection<Body> {
         let body = this.find(elem => {
             if (typeof obj.id !== 'undefined') return obj.id === elem.id;
             else if (typeof obj.circuit !== 'undefined') return obj.circuit === elem.circuit;
-            else if (typeof obj.name !== 'undefined') return obj.name === body.name;
+            else if (typeof obj.name !== 'undefined') return obj.name === elem.name;
             else return false;
         });
         return body;
@@ -1248,13 +1263,26 @@ export class Circuit extends EqItem implements ICircuit {
         }
         else return [];
     }
-
     public static getIdName(id: number) {
-        // todo: adjust for intellitouch
-        let defName = "Aux" + (id + 1).toString();
-        if (id === 0) defName = "Spa";
-        else if (id === 5) defName = "Pool";
-        else if (id < 5) defName = "Aux" + id.toString();
+        let defName;
+        // RKS: 07-19-22 I think this is some sort of artifact.  The system should not be creating this data as a default because
+        // the board itself should be coming up with these names.
+        switch (sys.controllerType) {
+            case ControllerType.SunTouch:
+                break;
+            default:
+                if (sys.board.equipmentIds.circuitGroups.isInRange(id))
+                    defName = `Group ${id - sys.board.equipmentIds.circuitGroups.start + 1}`;
+                else if (sys.board.equipmentIds.features.isInRange(id))
+                    defName = `Feature ${id - sys.board.equipmentIds.features.start + 1}`;
+                else if (sys.board.equipmentIds.circuits.isInRange(id)) {
+                    if (id <= 1) defName = 'Spa';
+                    else if (id === 6) defName = 'Pool';
+                    else if (id < 6) defName = `Aux ${id - 1}`;
+                    else defName = `Aux ${id - 2}`;
+                }
+                break;
+        }
         return defName;
     }
 }
@@ -1335,6 +1363,16 @@ export class Pump extends EqItem {
     public initData() {
         if (typeof this.data.isVirtual !== 'undefined') delete this.data.isVirtual;
         if (typeof this.data.portId === 'undefined') this.data.portId = 0;
+        if (typeof this.data.body === 'number' && this.data.model === 2 && this.data.master === 1){
+            // convert SS from body types to circuit arrays
+            if (this.data.body === 255 || this.data.body === 0 && !this.data.circuits.find(el => el.circuit === 6)) {
+                this.data.circuits.push({"circuit": 6, "relay": 1, "units": 0, "id": this.data.circuits.length + 1, "master": 1})
+            }
+            if (this.data.body === 255 || this.data.body === 101 && !this.data.circuits.find(el => el.circuit === 1)) {
+                this.data.circuits.push({"circuit": 1, "relay": 1, "units": 0, "id": this.data.circuits.length + 1, "master": 1})
+            }
+            this.data.body = undefined;
+        }
     }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
@@ -1409,9 +1447,9 @@ export class Pump extends EqItem {
     public deletePumpCircuit(pumpCircuitId: number) {
         return sys.board.pumps.deletePumpCircuit(this, pumpCircuitId);
     }
-    public setType(pumpType: number) {
-        sys.board.pumps.setType(this, pumpType);
-    }
+    //public setType(pumpType: number) {
+    //    sys.board.pumps.setType(this, pumpType);
+    //}
     public nextAvailablePumpCircuit(): number {
         let pumpCircuits = this.circuits;
         for (let i = 1; i <= 8; i++) {
@@ -1498,6 +1536,7 @@ export class Chlorinator extends EqItem {
         if (typeof this.data.ignoreSaltReading === 'undefined') this.data.ignoreSaltReading = false;
         if (typeof this.data.isVirtual !== 'undefined') delete this.data.isVirtual;
         if (typeof this.data.portId === 'undefined') this.data.portId = 0;
+        if (typeof this.data.saltTarget === 'undefined') this.data.saltTarget = 3400;
     }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
@@ -1513,6 +1552,14 @@ export class Chlorinator extends EqItem {
     public set spaSetpoint(val: number) { this.setDataVal('spaSetpoint', val); }
     public get superChlorHours(): number { return this.data.superChlorHours; }
     public set superChlorHours(val: number) { this.setDataVal('superChlorHours', val); }
+    public get saltTarget(): number { return this.data.saltTarget; }
+    public set saltTarget(val: number) {
+        if (this.data.saltTarget !== val) {
+            this.setDataVal('saltTarget', val);
+            let cstate = state.chlorinators.getItemById(this.id, true);
+            cstate.calcSaltRequired(this.saltTarget);
+        }
+    }
     public get isActive(): boolean { return this.data.isActive; }
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
     public get address(): number { return this.data.address; }
@@ -1899,6 +1946,9 @@ export class CircuitGroupCollection extends EqItemCollection<CircuitGroup> {
 }
 export class CircuitGroup extends EqItem implements ICircuitGroup, ICircuit {
     public dataName = 'circuitGroupConfig';
+    public initData() {
+        if (typeof this.data.showInFeatures === 'undefined') this.data.showInFeatures = true;
+    }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
     public get name(): string { return this.data.name; }

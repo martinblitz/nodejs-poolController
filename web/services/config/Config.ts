@@ -15,10 +15,10 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import * as fs from "fs";
+import * as path from "path";
 import * as express from "express";
 import * as extend from 'extend';
 import * as multer from 'multer';
-import * as path from "path";
 import { sys, LightGroup, ControllerType, Pump, Valve, Body, General, Circuit, ICircuit, Feature, CircuitGroup, CustomNameCollection, Schedule, Chlorinator, Heater } from "../../../controller/Equipment";
 import { config } from "../../../config/Config";
 import { logger } from "../../../logger/Logger";
@@ -324,25 +324,6 @@ export class ConfigRoute {
             let opts = config.getSection();
             return res.status(200).send(opts);
         });
-        app.get('/app/options/interfaces', (req, res) => {
-            // todo: move bytevaluemaps out to a proper location; add additional definitions
-            let opts = {
-                interfaces: config.getSection('web.interfaces'),
-                types: [
-                    { name: 'rest', desc: 'Rest' },
-                    { name: 'http', desc: 'Http' },
-                    { name: 'rem', desc: 'Relay Equipment Manager' },
-                    { name: 'mqtt', desc: 'MQTT' },
-                    { name: 'influx', desc: 'InfluxDB' }
-                ],
-                protocols: [
-                    { val: 0, name: 'http://', desc: 'http://' },
-                    { val: 1, name: 'https://', desc: 'https://' },
-                    { val: 2, name: 'mqtt://', desc: 'mqtt://' }
-                ]
-            }
-            return res.status(200).send(opts);
-        });
         app.get('/config/options/tempSensors', (req, res) => {
             let opts = {
                 tempUnits: sys.board.valueMaps.tempUnits.toArray(),
@@ -521,6 +502,18 @@ export class ConfigRoute {
             }
             catch (err) { next(err); }
         });
+        // RKS: 05-20-22 This is a remnant of the old web ui.  It is not called and the setType method needed to go away.
+        //app.delete('/config/pump/:pumpId', async (req, res, next) => {
+        //    try {
+        //        let pump = sys.pumps.getItemById(parseInt(req.params.pumpId, 10));
+        //        await sys.board.pumps.deletePumpAsync()
+        //        if (pump.type === 0) {
+        //            return res.status(500).send(`Pump ${pump.id} not active`);
+        //        }
+        //        pump.setType(0);
+        //        return res.status(200).send('OK');
+        //    } catch (err) { next(err); }
+        //});
         app.delete('/config/pump', async (req, res, next) => {
             try {
                 let pump = await sys.board.pumps.deletePumpAsync(req.body);
@@ -637,14 +630,6 @@ export class ConfigRoute {
             catch (err) {
                 next(err);
             }
-        });
-        app.delete('/config/pump/:pumpId', (req, res) => {
-            let pump = sys.pumps.getItemById(parseInt(req.params.pumpId, 10));
-            if (pump.type === 0) {
-                return res.status(500).send(`Pump ${pump.id} not active`);
-            }
-            pump.setType(0);
-            return res.status(200).send('OK');
         });
         app.put('/config/dateTime', async (req, res, next) => {
             try {

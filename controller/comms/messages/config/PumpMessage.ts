@@ -25,6 +25,7 @@ export class PumpMessage {
             case ControllerType.IntelliCenter:
                 PumpMessage.processIntelliCenterPump(msg);
                 break;
+            case ControllerType.SunTouch:
             case ControllerType.IntelliCom:
             case ControllerType.EasyTouch:
             case ControllerType.IntelliTouch:
@@ -61,6 +62,7 @@ export class PumpMessage {
                 pump = sys.pumps.getItemById(pumpId, isActive);
             }
             pump.address = pumpId + 95;
+            pump.master = 0;
             switch (type) {
                 case 0: // none
                     pump.type = 0;
@@ -240,6 +242,7 @@ export class PumpMessage {
                 }
                 if (typeof pump.model === 'undefined') pump.model = 0;
                 pump.type = type;
+                pump.master = 0;
                 let spump = state.pumps.getItemById(pump.id, true);
                 spump.type = pump.type;
                 spump.isActive = pump.isActive = true;
@@ -330,7 +333,6 @@ export class PumpMessage {
         // 20   | 3   | Big endian speed for the speed (1000 rpm with byte(29))
         // 21   | 3   | Big eniand speed for the priming speed (1000 rpm with byte(30))
         // All 30 bytes on this message are accounted for except for byte 3 & 4.
-
         if (typeof pump.model === 'undefined') pump.model = 0;
         for (let circuitId = 1; circuitId <= sys.board.valueMaps.pumpTypes.get(pump.type).maxCircuits; circuitId++) {
             let _circuit = msg.extractPayloadByte(circuitId * 2 + 3); 

@@ -56,9 +56,10 @@ export class ValveMessage {
             case ControllerType.IntelliCom:
             case ControllerType.EasyTouch:
             case ControllerType.IntelliTouch:
+            case ControllerType.SunTouch:
                 switch (msg.action) {
                     case 29:
-                        ValveMessage.process_ValveAssignment_IT(msg);
+                        sys.controllerType === ControllerType.SunTouch ? ValveMessage.process_ValveAssignment_ST(msg) : ValveMessage.process_ValveAssignment_IT(msg);
                         break;
                     case 35:
                         ValveMessage.process_ValveOptions_IT(msg);
@@ -73,6 +74,26 @@ export class ValveMessage {
         sys.general.options.pumpDelay = msg.extractPayloadByte(0) >> 7 === 1;
         msg.isProcessed = true;
     }
+    private static process_ValveAssignment_ST(msg: Inbound) {
+        // SunTouch example
+        //[165,1,15,16,29,24][2,0,0,0,20,255,255,1,2,3,4,1,72,0,0,0,3,0,0,63,4,0,0,0][3,167]
+        let vA = sys.valves.getItemById(1, true);
+        let vB = sys.valves.getItemById(2, true);
+        let vC = sys.valves.getItemById(3, true);
+        if (sys.equipment.shared && !sys.equipment.single) {
+            vA.name = 'Intake';
+            vB.circuit = vA.circuit = sys.board.valueMaps.virtualCircuits.encode('poolspa');
+            vB.name = 'Return';
+        }
+        else {
+            vA.name = 'Valve A';
+            vB.name = 'Valve B';
+            vA.circuit = msg.extractPayloadByte(1);
+            vB.circuit = msg.extractPayloadByte(2);
+        }
+        vC.circuit = msg.extractPayloadByte(4);
+        vC.name = 'Valve C'
+    }
     private static process_ValveAssignment_IT(msg: Inbound) {
         // sample packet
         // 165,33,16,34,157,6,0,0,1,255,255,255,4,153  [set]
@@ -82,10 +103,10 @@ export class ValveMessage {
         for (let ndx = 4, id = 1; id <= sys.equipment.maxValves; ndx++) {
             let valve: Valve = sys.valves.getItemById(id);
             if (id === 3) {
-                if (sys.equipment.shared) {
+                if (sys.equipment.shared && !sys.equipment.single) {
                     valve = sys.valves.getItemById(id, true);
                     valve.circuit = 6; // pool/spa -- fix
-                    valve.name = ValveMessage.getName(id, valve.circuit);
+                    valve.name = 'Intake';
                     valve.isIntake = true;
                     valve.isReturn = false;
                     valve.isActive = true;
@@ -99,13 +120,12 @@ export class ValveMessage {
                     sys.valves.removeItemById(id);
                     state.valves.removeItemById(id);
                 }
-                id++;
             }
             else if (id === 4) {
-                if (sys.equipment.shared) {
+                if (sys.equipment.shared && !sys.equipment.single) {
                     valve = sys.valves.getItemById(id, true);
                     valve.circuit = 6; // pool/spa -- fix
-                    valve.name = ValveMessage.getName(id, valve.circuit);
+                    valve.name = 'Return';
                     valve.isIntake = false;
                     valve.isReturn = true;
                     valve.isActive = true;
@@ -119,13 +139,12 @@ export class ValveMessage {
                     sys.valves.removeItemById(id);
                     state.valves.removeItemById(id);
                 }
-                id++;
             }
             else {
                 valve = sys.valves.getItemById(id, true);
                 let circ = msg.extractPayloadByte(ndx);
                 valve.circuit = circ > 0 && circ < 255 ? circ : 0;
-                valve.circuit = msg.extractPayloadByte(ndx);
+                //valve.circuit = msg.extractPayloadByte(ndx);
                 //valve.isActive = valve.circuit > 0 && valve.circuit < 255;
                 // RKS: 04-14-21 -- Valves should always be active but shown with no assignment when
                 // there is no circuit.  The circuitry for the valve always exists although I am not sure
@@ -148,10 +167,17 @@ export class ValveMessage {
             }
             else {
                 valve.master = 0;
-                // valve.isVirtual = false;
                 valve.type = 0;
             }
             id++;
+        }
+        // Clean up any valves that are leftovers from previous configs.
+        for (let i = sys.valves.length - 1; i >= 0; i--) {
+            let v = sys.valves.getItemByIndex(i);
+            if (v.master === 0 && v.id > sys.equipment.maxValves) {
+                sys.valves.removeItemByIndex(i);
+                state.valves.removeItemById(v.id);
+            }
         }
         msg.isProcessed = true;
     }

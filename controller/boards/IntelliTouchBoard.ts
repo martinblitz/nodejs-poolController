@@ -14,7 +14,7 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-import { byteValueMap } from './SystemBoard';
+import { byteValueMap, EquipmentIdRange, } from './SystemBoard';
 import { logger } from '../../logger/Logger';
 import { EasyTouchBoard, TouchConfigQueue, GetTouchConfigCategories, TouchCircuitCommands } from './EasyTouchBoard';
 import { state, ICircuitGroupState } from '../State';
@@ -22,24 +22,55 @@ import { PoolSystem, sys, ExpansionPanel, Equipment } from '../Equipment';
 
 import { conn } from '../comms/Comms';
 import { InvalidEquipmentDataError } from '../Errors';
+import { log } from 'winston';
 
 export class IntelliTouchBoard extends EasyTouchBoard {
     constructor(system: PoolSystem) {
         super(system);
+        // Circuits even in single body IntelliTouch always start at 1.
+        this.equipmentIds.circuits.start = 1;
         this.equipmentIds.features.start = 41;
         this.equipmentIds.features.end = 50;
+        this.equipmentIds.virtualCircuits = new EquipmentIdRange(154, 162);
         this._configQueue = new ITTouchConfigQueue();
         this.valueMaps.expansionBoards = new byteValueMap([
             [0, { name: 'IT5', part: 'i5+3', desc: 'IntelliTouch i5+3', circuits: 6, shared: true }],
             [1, { name: 'IT7', part: 'i7+3', desc: 'IntelliTouch i7+3', circuits: 8, shared: true }],
             [2, { name: 'IT9', part: 'i9+3', desc: 'IntelliTouch i9+3', circuits: 10, shared: true }],
-            [3, { name: 'IT5S', part: 'i5+3S', desc: 'IntelliTouch i5+3S', circuits: 5, shared: false, bodies: 1, intakeReturnValves: false }],
-            [4, { name: 'IT9S', part: 'i9+3S', desc: 'IntelliTouch i9+3S', circuits: 9, shared: false, bodies: 1, intakeReturnValves: false }],
-            [5, { name: 'IT10D', part: 'i10D', desc: 'IntelliTouch i10D', circuits: 10, shared: false, dual: true }],
+            [3, { name: 'IT5S', part: 'i5+3S', desc: 'IntelliTouch i5+3S', circuits: 5, single: true, shared: true, bodies: 2, intakeReturnValves: false }],
+            [4, { name: 'IT9S', part: 'i9+3S', desc: 'IntelliTouch i9+3S', circuits: 9, single: true, shared: true, bodies: 2, intakeReturnValves: false }],
+            [5, { name: 'IT10D', part: 'i10D', desc: 'IntelliTouch i10D', circuits: 10, single: true, shared: false, dual: true }],
             [32, { name: 'IT5X', part: 'i5X', desc: 'IntelliTouch i5X', circuits: 5 }],
             [33, { name: 'IT10X', part: 'i10X', desc: 'IntelliTouch i10X', circuits: 10 }],
             [64, { name: 'Valve Exp', part: '520285', desc: 'Valve Expansion Module', valves: 3 }]
         ]);
+        // I don't think these have ever been right.  
+        // So far I have seen below based on discussion #436
+        // 155 = heater
+        // 156 = poolheater
+        // 157 = spaheater
+        this.valueMaps.virtualCircuits = new byteValueMap([
+            [154, { name: 'solar', desc: 'Solar', assignableToPumpCircuit: true }],
+            [155, { name: 'spaHeater', desc: 'Spa Heater', assignableToPumpCircuit: true }],
+            [156, { name: 'poolHeater', desc: 'Pool Heater', assignableToPumpCircuit: true }],
+            [157, { name: 'heater', desc: 'Either Heater', assignableToPumpCircuit: true }],
+            [158, { name: 'freeze', desc: 'Freeze', assignableToPumpCircuit: true }],
+            [159, { name: 'heatBoost', desc: 'Heat Boost', assignableToPumpCircuit: false }],
+            [160, { name: 'heatEnable', desc: 'Heat Enable', assignableToPumpCircuit: false }],
+            [161, { name: 'pumpSpeedUp', desc: 'Pump Speed +', assignableToPumpCircuit: false }],
+            [162, { name: 'pumpSpeedDown', desc: 'Pump Speed -', assignableToPumpCircuit: false }],
+            [255, { name: 'notused', desc: 'NOT USED', assignableToPumpCircuit: true }]
+        ]);
+
+    }
+    public initVirtualCircuits() {
+        for (let i = state.virtualCircuits.length - 1; i >= 0; i--) {
+            let vc = state.virtualCircuits.getItemByIndex(i);
+            if (vc.id > this.equipmentIds.virtualCircuits.end ||
+                vc.id < this.equipmentIds.virtualCircuits.start) state.virtualCircuits.removeItemByIndex(i);
+        }
+        // Now that we removed all the virtual circuits that should not be there we need
+        // to update them based upon the data.
     }
     public initExpansionModules(byte1: number, byte2: number) {
         console.log(`Pentair IntelliTouch System Detected!`);
@@ -57,30 +88,29 @@ export class IntelliTouchBoard extends EasyTouchBoard {
         let eq = sys.equipment;
         let md = mod.get();
 
-        eq.maxBodies = md.bodies = typeof mt.bodies !== 'undefined' ? mt.bodies : mt.shared || mt.dual ? 2 : 1;
+        //eq.maxBodies = md.bodies = typeof mt.bodies !== 'undefined' ? mt.bodies : mt.shared || mt.dual ? 2 : 1;
+        // There are always 2 bodies on an IntelliTouch even the single body models.
+        eq.maxBodies = 2;
         eq.maxCircuits = md.circuits = typeof mt.circuits !== 'undefined' ? mt.circuits : 6;
         eq.maxFeatures = md.features = typeof mt.features !== 'undefined' ? mt.features : 8;
         eq.maxValves = md.valves = typeof mt.valves !== 'undefined' ? mt.valves : mt.shared ? 4 : 2;
         eq.maxPumps = md.maxPumps = typeof mt.pumps !== 'undefined' ? mt.pumps : 8;
         eq.shared = mt.shared;
         eq.dual = typeof mt.dual !== 'undefined' ? mt.dual : false;
-        eq.intakeReturnValves = md.intakeReturnValves = typeof mt.intakeReturnValves !== 'undefined' ? mt.intakeReturnValves : false;
+        eq.single = typeof mt.single !== 'undefined' ? mt.single : false;
+        eq.intakeReturnValves = eq.single ? false : true;
         eq.maxChlorinators = md.chlorinators = 1;
         eq.maxChemControllers = md.chemControllers = 1;
         eq.maxCustomNames = 20;
         eq.maxCircuitGroups = 10; // Not sure why this is 10 other than to allow for those that we are in control of.
-        if (!eq.shared && !eq.dual) {
+        if (eq.single) {
             // Replace the body types with Hi-Temp and Lo-Temp
             sys.board.valueMaps.bodyTypes.merge([[0, { name: 'pool', desc: 'Lo-Temp' }],
-            [1, { name: 'spa', desc: 'Hi-Temp' }]]);
+                [1, { name: 'spa', desc: 'Hi-Temp' }]]);
         }
         // Calculate out the invalid ids.
-        // sys.board.equipmentIds.invalidIds.set([]);
         // Add in all the invalid ids from the base personality board.
         sys.board.equipmentIds.invalidIds.set([16, 17, 18]); // These appear to alway be invalid in IntelliTouch.
-        // RGS 10-7-21: Since single bodies have hi-temp/lo-temp we will always want ID 1.
-        // if (!eq.shared) sys.board.equipmentIds.invalidIds.merge([1]);
-        //if (eq.maxCircuits < 9) sys.board.equipmentIds.invalidIds.merge([9]);
         for (let i = 7; i <= 10; i++) {
             // This will add all the invalid ids between 7 and 10 that are omitted for IntelliTouch models.
             // For instance an i7+3 can have up to 8 circuits since 1 and 6 are shared but an i7+3S will only have 7.
@@ -136,7 +166,6 @@ export class IntelliTouchBoard extends EasyTouchBoard {
         if (byte1 !== 14) sys.board.equipmentIds.invalidIds.merge([10, 19]);
         state.equipment.model = sys.equipment.model = mt.desc;
         state.equipment.controllerType = 'intellitouch';
-        sys.equipment.shared ? sys.board.equipmentIds.circuits.start = 1 : sys.board.equipmentIds.circuits.start = 2;
         this.initBodyDefaults();
         this.initHeaterDefaults();
         (async () => {
@@ -152,10 +181,21 @@ export class IntelliTouchBoard extends EasyTouchBoard {
             let v = sys.valves.getItemByIndex(i);
             if (v.id < 50) v.master = 0;
         }
-        for (let i = 0; i < sys.bodies.length; i++) {
-            let b = sys.bodies.getItemByIndex(i);
-            b.master = 0;
+        // Clean up any schedules that shouldn't be there.
+        for (let i = sys.schedules.length - 1; i > 0; i--) {
+            let sched = sys.schedules.getItemByIndex(i);
+            if (sched.id < 1) {
+                sys.schedules.removeItemByIndex(i);
+                state.schedules.removeItemById(sched.id);
+            }
+            if (sched.id < eq.maxSchedules) sched.master = 0;
+            else if (sched.id > eq.maxSchedules && (sched.master === 0 || typeof sched.master === 'undefined')) {
+                sys.schedules.removeItemByIndex(i);
+                state.schedules.removeItemById(sched.id);
+            }
         }
+        eq.setEquipmentIds();
+        this.initVirtualCircuits();
         state.equipment.maxBodies = sys.equipment.maxBodies;
         state.equipment.maxCircuitGroups = sys.equipment.maxCircuitGroups;
         state.equipment.maxCircuits = sys.equipment.maxCircuits;
@@ -165,9 +205,11 @@ export class IntelliTouchBoard extends EasyTouchBoard {
         state.equipment.maxPumps = sys.equipment.maxPumps;
         state.equipment.maxSchedules = sys.equipment.maxSchedules;
         state.equipment.maxValves = sys.equipment.maxValves;
+        state.equipment.single = sys.equipment.single;
         state.equipment.shared = sys.equipment.shared;
         state.equipment.dual = sys.equipment.dual;
         state.emitControllerChange();
+
     }
     public circuits: ITTouchCircuitCommands = new ITTouchCircuitCommands(this);
     public async setControllerType(obj): Promise<Equipment> {
@@ -222,6 +264,32 @@ export class IntelliTouchBoard extends EasyTouchBoard {
         } catch (err) {
             logger.error(`Error setting expansion panels: ${err.message}`);
         }
+    }
+    public initBodyDefaults() {
+        // Initialize the bodies.  We will need these very soon.
+        for (let i = 1; i <= sys.equipment.maxBodies; i++) {
+            // Add in the bodies for the configuration.  These need to be set.
+            let cbody = sys.bodies.getItemById(i, true);
+            let tbody = state.temps.bodies.getItemById(i, true);
+            cbody.isActive = true;
+            // If the body doesn't represent a spa then we set the type.
+            tbody.type = cbody.type = i - 1;  // This will set the first body to pool/Lo-Temp and the second body to spa/Hi-Temp.
+            if (typeof cbody.name === 'undefined') {
+                let bt = sys.board.valueMaps.bodyTypes.transform(cbody.type);
+                tbody.name = cbody.name = bt.desc;
+            }
+        }
+        sys.bodies.removeItemById(3);
+        sys.bodies.removeItemById(4);
+        state.temps.bodies.removeItemById(3);
+        state.temps.bodies.removeItemById(4);
+        for (let i = 0; i < sys.bodies.length; i++) {
+            let b = sys.bodies.getItemByIndex(i);
+            b.master = 0;
+        }
+        sys.board.heaters.initTempSensors();
+        sys.general.options.clockMode = sys.general.options.clockMode || 12;
+        sys.general.options.clockSource = sys.general.options.clockSource || 'manual';
     }
 }
 class ITTouchConfigQueue extends TouchConfigQueue {

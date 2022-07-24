@@ -57,10 +57,28 @@ export class HeaterStateMessage {
         let heater: Heater = sys.heaters.getItemByAddress(msg.source);
         let sheater = state.heaters.getItemById(heater.id);
         sheater.isOn = msg.extractPayloadByte(0) > 0;
-
-        let byte = msg.extractPayloadByte(2);
-        //sheater.isOn = byte >= 1;
-        //sheater.isCooling = byte === 2;
+        if (heater.master > 0) {
+            let sbody = sheater.bodyId > 0 ? state.temps.bodies.getItemById(sheater.bodyId) : undefined;
+            if (typeof sbody !== 'undefined') {
+                switch (msg.extractPayloadByte(1)) {
+                    case 1:
+                        sbody.heatStatus = sys.board.valueMaps.heatStatus.getValue('hpheat');
+                        break;
+                    case 2:
+                        sbody.heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
+                        break;
+                    case 3:
+                        sbody.heatStatus = sys.board.valueMaps.heatStatus.getValue('dual');
+                        break;
+                    case 4:
+                        sbody.heatStatus = sys.board.valueMaps.heatStatus.getValue('dual');
+                        break;
+                    default:
+                        sbody.heatStatus = sys.board.valueMaps.heatStatus.getValue('off');
+                        break;
+                }
+            }
+        }
         sheater.commStatus = 0;
         state.equipment.messages.removeItemByCode(`heater:${heater.id}:comms`);
         msg.isProcessed = true;

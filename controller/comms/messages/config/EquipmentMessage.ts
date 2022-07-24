@@ -131,7 +131,9 @@ export class EquipmentMessage {
                             sys.bodies.removeItemById(bodyId);
                             state.temps.bodies.removeItemById(bodyId);
                         }
+                        state.equipment.single = sys.equipment.single = sys.equipment.shared == false && sys.equipment.dual === false;
                         state.equipment.shared = sys.equipment.shared;
+                        state.equipment.dual = sys.equipment.dual;
                         state.equipment.model = sys.equipment.model;
                         state.equipment.controllerType = sys.controllerType;
                         state.equipment.maxBodies = sys.equipment.maxBodies;
@@ -149,6 +151,7 @@ export class EquipmentMessage {
             case ControllerType.IntelliCom:
             case ControllerType.EasyTouch:
             case ControllerType.IntelliTouch:
+            case ControllerType.SunTouch:
                 switch (msg.action) {
                     case 252:
                         EquipmentMessage.processSoftwareVersion(msg);

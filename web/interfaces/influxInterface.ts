@@ -94,13 +94,15 @@ export class InfluxInterfaceBindings extends BaseInterfaceBindings {
             writeFailed: function(error, lines, failedAttempts){
                 /** return promise or void */
                 logger.error(`InfluxDB batch write failed writing ${lines.length} lines with ${failedAttempts} failed attempts.  ${error.message}`);
+                //console.log(lines);
             },
             writeSuccess: function(lines){
                 logger.silly(`InfluxDB successfully wrote ${lines.length} lines.`)
             },
             maxRetryTime: DEFAULT_WriteOptions.maxRetryTime,
             exponentialBase: DEFAULT_WriteOptions.exponentialBase,
-            randomRetry: DEFAULT_WriteOptions.randomRetry
+            randomRetry: DEFAULT_WriteOptions.randomRetry,
+            maxBatchBytes: 4096
         }
         this.writeApi = influxDB.getWriteApi(org, bucket, 'ms', writeOptions);
 

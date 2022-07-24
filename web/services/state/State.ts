@@ -161,6 +161,9 @@ export class StateRoute {
         app.get('/state/feature/:id', (req, res) => {
             res.status(200).send(state.features.getItemById(parseInt(req.params.id, 10)).get());
         });
+        app.get('/state/schedule/:id', (req, res) => {
+            res.status(200).send(state.schedules.getItemById(parseInt(req.params.id, 10)).get());
+        });
         app.get('/state/circuitGroup/:id', (req, res) => {
             res.status(200).send(state.circuitGroups.getItemById(parseInt(req.params.id, 10)).get());
         });
@@ -226,6 +229,13 @@ export class StateRoute {
         app.put('/state/light/runCommand', async (req, res, next) => {
             try {
                 let slight = await sys.board.circuits.runLightCommandAsync(req.body);
+                return res.status(200).send(slight.get(true));
+            }
+            catch (err) { next(err); }
+        });
+        app.put('/state/light/:id/colorSync', async (req, res, next) => {
+            try {
+                let slight = await sys.board.circuits.runLightCommandAsync({ id: parseInt(req.params.id, 10), command: 'colorsync' });
                 return res.status(200).send(slight.get(true));
             }
             catch (err) { next(err); }
@@ -367,6 +377,13 @@ export class StateRoute {
             }
             catch (err) { next(err); }
         });
+        app.put('/state/manualOperationPriority', async (req, res, next) => {
+            try {
+                let cstate = await sys.board.system.setManualOperationPriority(parseInt(req.body.id, 10));
+                return res.status(200).send(cstate.get(true));
+            }
+            catch (err) { next(err); }
+        });
         app.put('/state/lightGroup/runCommand', async (req, res, next) => {
             try {
                 let sgroup = await sys.board.circuits.runLightGroupCommandAsync(req.body);
@@ -416,8 +433,24 @@ export class StateRoute {
             }
             catch (err) { next(err); }
         });
-
-
+        app.put('/state/panelMode', async (req, res, next) => {
+            try {
+                await sys.board.system.setPanelModeAsync(req.body);
+                return res.status(200).send(state.controllerState);
+            } catch (err) { next(err); }
+        });
+        app.put('/state/toggleServiceMode', async (req, res, next) => {
+            try {
+                let data = extend({}, req.body);
+                if (state.mode === 0) {
+                    if (typeof data.timeout !== 'undefined' && !isNaN(data.timeout)) data.mode = 'timeout';
+                    else data.mode = 'service';
+                    await sys.board.system.setPanelModeAsync(req.body);
+                }
+                else sys.board.system.setPanelModeAsync({ mode: 'auto' });
+                return res.status(200).send(state.controllerState);
+            } catch (err) { next(err); }
+        });
         app.get('/state/emitAll', (req, res) => {
             res.status(200).send(state.emitAllEquipmentChanges());
         });

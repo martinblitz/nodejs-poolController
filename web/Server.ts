@@ -37,6 +37,7 @@ import { logger } from "../logger/Logger";
 import { HttpInterfaceBindings } from './interfaces/httpInterface';
 import { InfluxInterfaceBindings } from './interfaces/influxInterface';
 import { MqttInterfaceBindings } from './interfaces/mqttInterface';
+import { RuleInterfaceBindings } from "./interfaces/ruleInterface";
 import { ConfigRoute } from "./services/config/Config";
 import { ConfigSocket } from "./services/config/ConfigSocket";
 import { StateRoute } from "./services/state/State";
@@ -54,6 +55,7 @@ export class WebServer {
     private _servers: ProtoServer[] = [];
     private family = 'IPv4';
     private _autoBackupTimer: NodeJS.Timeout;
+    private _httpPort: number;
     constructor() { }
     public async init() {
         try {
@@ -68,12 +70,15 @@ export class WebServer {
                 switch (s) {
                     case 'http':
                         srv = new HttpServer(s, s);
+                        if (c.enabled !== false) this._httpPort = c.port;
                         break;
                     case 'http2':
                         srv = new Http2Server(s, s);
+                        if (c.enabled !== false) this._httpPort = c.port;
                         break;
                     case 'https':
                         srv = new HttpsServer(s, s);
+                        if (c.enabled !== false) this._httpPort = c.port;
                         break;
                     case 'mdns':
                         srv = new MdnsServer(s, s);
@@ -111,7 +116,13 @@ export class WebServer {
                         int.init(c);
                         this._servers.push(int);
                         break;
+                    case 'rule':
+                        int = new RuleInterfaceServer(c.name, type);
+                        int.init(c);
+                        this._servers.push(int);
+                        break;
                     case 'influx':
+                    case 'influxdb2':
                         int = new InfluxInterfaceServer(c.name, type);
                         int.init(c);
                         this._servers.push(int);
@@ -173,12 +184,9 @@ export class WebServer {
             }
         }
     }
-    public ip() {
-        return typeof this.getInterface() === 'undefined' ? '0.0.0.0' : this.getInterface().address;
-    }
-    public mac() {
-        return typeof this.getInterface() === 'undefined' ? '00:00:00:00' : this.getInterface().mac;
-    }
+    public ip() { return typeof this.getInterface() === 'undefined' ? '0.0.0.0' : this.getInterface().address; }
+    public mac() { return typeof this.getInterface() === 'undefined' ? '00:00:00:00' : this.getInterface().mac; }
+    public httpPort(): number { return this._httpPort }
     public findServer(name: string): ProtoServer { return this._servers.find(elem => elem.name === name); }
     public findServersByType(type: string) { return this._servers.filter(elem => elem.type === type); }
     public findServerByGuid(uuid: string) { return this._servers.find(elem => elem.uuid === uuid); }
@@ -697,7 +705,7 @@ export class HttpServer extends ProtoServer {
                     res.header('Access-Control-Allow-Methods', 'OPTIONS, GET, POST, PUT, DELETE');
                     if ('OPTIONS' === req.method) { res.sendStatus(200); }
                     else {
-                        if (req.url !== '/device') {
+                        if (req.url !== '/upnp.xml') {
                             logger.info(`[${new Date().toLocaleTimeString()}] ${req.ip} ${req.method} ${req.url} ${typeof req.body === 'undefined' ? '' : JSON.stringify(req.body)}`);
                             logger.logAPI(`{"dir":"in","proto":"api","requestor":"${req.ip}","method":"${req.method}","path":"${req.url}",${typeof req.body === 'undefined' ? '' : `"body":${JSON.stringify(req.body)},`}"ts":"${Timestamp.toISOLocal(new Date())}"}${os.EOL}`);
                         }
@@ -788,7 +796,7 @@ export class HttpsServer extends HttpServer {
                 res.header('Access-Control-Allow-Methods', 'OPTIONS, GET, POST, PUT, DELETE');
                 if ('OPTIONS' === req.method) { res.sendStatus(200); }
                 else {
-                    if (req.url !== '/device') {
+                    if (req.url !== '/upnp.xml') {
                         logger.info(`[${new Date().toLocaleString()}] ${req.ip} ${req.method} ${req.url} ${typeof req.body === 'undefined' ? '' : JSON.stringify(req.body)}`);
                         logger.logAPI(`{"dir":"in","proto":"api","requestor":"${req.ip}","method":"${req.method}","path":"${req.url}",${typeof req.body === 'undefined' ? '' : `"body":${JSON.stringify(req.body)},`}"ts":"${Timestamp.toISOLocal(new Date())}"}${os.EOL}`);
                     }
@@ -840,26 +848,35 @@ export class HttpsServer extends HttpServer {
 export class SsdpServer extends ProtoServer {
     // Simple service discovery protocol
     public server: any; //node-ssdp;
+    public deviceUUID: string;
+    public upnpPath: string;
+    public modelName: string;
+    public modelNumber: string;
+    public serialNumber: string;
+    public deviceType = 'urn:schemas-tagyoureit-org:device:PoolController:1';
     public async init(cfg) {
         this.uuid = cfg.uuid;
         if (cfg.enabled) {
             let self = this;
-
             logger.info('Starting up SSDP server');
-            var udn = 'uuid:806f52f4-1f35-4e33-9299-' + webApp.mac();
+            let ver = JSON.parse(fs.readFileSync(path.posix.join(process.cwd(), '/package.json'), 'utf8')).version || '0.0.0';
+            this.deviceUUID = 'uuid:806f52f4-1f35-4e33-9299-' + webApp.mac().replace(/:/g, '');
+            this.serialNumber = webApp.mac();
+            this.modelName = `njsPC v${ver}`;
+            this.modelNumber = `njsPC${ver.replace(/\./g, '-')}`;
             // todo: should probably check if http/https is enabled at this point
-            var port = config.getSection('web').servers.http.port || 4200;
-            //console.log(port);
-            let location = 'http://' + webApp.ip() + ':' + port + '/device';
-            var SSDP = ssdp.Server;
+            let port = config.getSection('web').servers.http.port || 7777;
+            this.upnpPath = 'http://' + webApp.ip() + ':' + port + '/upnp.xml';
+            let SSDP = ssdp.Server;
             this.server = new SSDP({
+                //customLogger: (...args) => console.log.apply(null, args),
                 logLevel: 'INFO',
-                udn: udn,
-                location: location,
+                udn: this.deviceUUID,
+                location: this.upnpPath,
                 sourcePort: 1900
             });
-            this.server.addUSN('urn:schemas-upnp-org:device:PoolController:1');
-
+            this.server.addUSN('upnp:rootdevice'); // This line will make the server show up in windows.
+            this.server.addUSN(this.deviceType);
             // start the server
             this.server.start()
                 .then(function () {
@@ -872,26 +889,28 @@ export class SsdpServer extends ProtoServer {
             });
         }
     }
-    public static deviceXML() {
-        let ver = sys.appVersion;
+    public deviceXML(): string {
         let XML = `<?xml version="1.0"?>
-                        <root xmlns="urn:schemas-upnp-org:PoolController-1-0">
-                            <specVersion>
-                                <major>${ver.split('.')[0]}</major>
-                                <minor>${ver.split('.')[1]}</minor>
-                                <patch>${ver.split('.')[2]}</patch>
-                            </specVersion>
-                            <device>
-                                <deviceType>urn:echo:device:PoolController:1</deviceType>
-                                <friendlyName>NodeJS Pool Controller</friendlyName> 
-                                <manufacturer>tagyoureit</manufacturer>
-                                <manufacturerURL>https://github.com/tagyoureit/nodejs-poolController</manufacturerURL>
-                                <modelDescription>An application to control pool equipment.</modelDescription>
-                                <serialNumber>0</serialNumber>
-                    			<UDN>uuid:806f52f4-1f35-4e33-9299-${webApp.mac()}</UDN>
-                                <serviceList></serviceList>
-                            </device>
-                        </root>`;
+        <root xmlns="urn:schemas-upnp-org:device-1-0">
+            <specVersion>
+                <major>1</major>
+                <minor>0</minor>
+            </specVersion>
+            <device>
+                <deviceType>${this.deviceType}</deviceType>
+                <friendlyName>NodeJS Pool Controller</friendlyName> 
+                <manufacturer>tagyoureit</manufacturer>
+                <manufacturerURL>https://github.com/tagyoureit/nodejs-poolController</manufacturerURL>
+                <presentationURL>http://${webApp.ip()}:${webApp.httpPort()}/state/all</presentationURL>
+                <modelName>${this.modelName}</modelName>
+                <modelNumber>${this.modelNumber}</modelNumber>
+                <modelDescription>An application to control pool equipment.</modelDescription>
+                <serialNumber>${this.serialNumber}</serialNumber>
+                <UDN>${this.deviceUUID}::${this.deviceType}</UDN>
+                <serviceList></serviceList>
+                <deviceList></deviceList>
+            </device>
+        </root>`;
         return XML;
     }
     public async stopAsync() {
@@ -1066,6 +1085,86 @@ export class HttpInterfaceServer extends ProtoServer {
         catch (err) { }
     }
 }
+export class RuleInterfaceServer extends ProtoServer {
+    public bindingsPath: string;
+    public bindings: RuleInterfaceBindings;
+    private _fileTime: Date = new Date(0);
+    private _isLoading: boolean = false;
+    public async init(cfg) {
+        this.uuid = cfg.uuid;
+        if (cfg.enabled) {
+            if (cfg.fileName && this.initBindings(cfg)) this.isRunning = true;
+        }
+    }
+    public loadBindings(cfg): boolean {
+        this._isLoading = true;
+        if (fs.existsSync(this.bindingsPath)) {
+            try {
+                let bindings = JSON.parse(fs.readFileSync(this.bindingsPath, 'utf8'));
+                let ext = extend(true, {}, typeof cfg.context !== 'undefined' ? cfg.context.options : {}, bindings);
+                this.bindings = Object.assign<RuleInterfaceBindings, any>(new RuleInterfaceBindings(cfg), ext);
+                this.isRunning = true;
+                this._isLoading = false;
+                const stats = fs.statSync(this.bindingsPath);
+                this._fileTime = stats.mtime;
+                return true;
+            }
+            catch (err) {
+                logger.error(`Error reading interface bindings file: ${this.bindingsPath}. ${err}`);
+                this.isRunning = false;
+                this._isLoading = false;
+            }
+        }
+        return false;
+    }
+    public initBindings(cfg): boolean {
+        let self = this;
+        try {
+            this.bindingsPath = path.posix.join(process.cwd(), "/web/bindings") + '/' + cfg.fileName;
+            let fileTime = new Date(0).valueOf();
+            fs.watch(this.bindingsPath, (event, fileName) => {
+                if (fileName && event === 'change') {
+                    if (self._isLoading) return; // Need a debounce here.  We will use a semaphore to cause it not to load more than once.
+                    const stats = fs.statSync(self.bindingsPath);
+                    if (stats.mtime.valueOf() === self._fileTime.valueOf()) return;
+                    self.loadBindings(cfg);
+                    logger.info(`Reloading ${cfg.name || ''} interface config: ${fileName}`);
+                }
+            });
+            this.loadBindings(cfg);
+            if (this.bindings.context.mdnsDiscovery) {
+                let srv = webApp.mdnsServer;
+                let qry = typeof this.bindings.context.mdnsDiscovery === 'string' ? { name: this.bindings.context.mdnsDiscovery, type: 'A' } : this.bindings.context.mdnsDiscovery;
+                if (typeof srv !== 'undefined') {
+                    srv.queryMdns(qry);
+                    srv.mdnsEmitter.on('mdnsResponse', (response) => {
+                        let url: URL;
+                        url = new URL(response);
+                        this.bindings.context.options.host = url.host;
+                        this.bindings.context.options.port = url.port || 80;
+                    });
+                }
+            }
+            return true;
+        }
+        catch (err) {
+            logger.error(`Error initializing interface bindings: ${err}`);
+        }
+        return false;
+    }
+    public emitToClients(evt: string, ...data: any) {
+        if (this.isRunning) {
+            // Take the bindings and map them to the appropriate http GET, PUT, DELETE, and POST.
+            this.bindings.bindEvent(evt, ...data);
+        }
+    }
+    public async stopAsync() {
+        try {
+            logger.info(`${this.name} Interface Server Shut down`);
+        }
+        catch (err) { }
+    }
+}
 
 export class InfluxInterfaceServer extends ProtoServer {
     public bindingsPath: string;
@@ -1127,10 +1226,9 @@ export class InfluxInterfaceServer extends ProtoServer {
         }
     }
 }
-
 export class MqttInterfaceServer extends ProtoServer {
     public bindingsPath: string;
-    public bindings: HttpInterfaceBindings;
+    public bindings: MqttInterfaceBindings;
     private _fileTime: Date = new Date(0);
     private _isLoading: boolean = false;
     public get isConnected() { return this.isRunning && this.bindings.events.length > 0; }
@@ -1146,7 +1244,20 @@ export class MqttInterfaceServer extends ProtoServer {
             try {
                 let bindings = JSON.parse(fs.readFileSync(this.bindingsPath, 'utf8'));
                 let ext = extend(true, {}, typeof cfg.context !== 'undefined' ? cfg.context.options : {}, bindings);
-                this.bindings = Object.assign<MqttInterfaceBindings, any>(new MqttInterfaceBindings(cfg), ext);
+                if (this.bindings && this.bindings.client) {
+                    // RKS: 05-29-22 - This was actually orphaning the subscriptions and event processors.  Instead of simply doing
+                    // an assign we ned to assign the underlying data and clear the old info out.  The reload method takes care of the
+                    // bindings for us.
+                    (async () => {
+                        await this.bindings.reload(ext);
+                    })();
+                }
+                else {
+                    this.bindings = Object.assign<MqttInterfaceBindings, any>(new MqttInterfaceBindings(cfg), ext);
+                    (async () => {
+                        await this.bindings.initAsync();
+                    })();
+                }
                 this.isRunning = true;
                 this._isLoading = false;
                 const stats = fs.statSync(this.bindingsPath);
@@ -1191,7 +1302,8 @@ export class MqttInterfaceServer extends ProtoServer {
     }
     public async stopAsync() {
         try {
-            if (typeof this.bindings !== 'undefined') await this.bindings.stopAsync();
+            fs.unwatchFile(this.bindingsPath);
+            if (this.bindings) await this.bindings.stopAsync();
         } catch (err) { logger.error(`Error shutting down MQTT Server ${this.name}: ${err.message}`); }
     }
 }
@@ -1414,7 +1526,7 @@ export class REMInterfaceServer extends ProtoServer {
     }
     private isJSONString(s: string): boolean {
         if (typeof s !== 'string') return false;
-        if (typeof s.startsWith('{') || typeof s.startsWith('[')) return true;
+        if (s.startsWith('{') || s.startsWith('[')) return true;
         return false;
     }
     public async getApiService(url: string, data?: any, timeout: number = 3600): Promise<InterfaceServerResponse> {

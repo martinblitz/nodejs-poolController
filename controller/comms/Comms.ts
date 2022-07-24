@@ -34,6 +34,10 @@ export class Connection {
         let port = this.findPortById(0);
         return typeof port !== 'undefined' && port.mockPort ? true : false;
     }
+    public isPortEnabled(portId: number) {
+        let port: RS485Port = this.findPortById(portId);
+        return typeof port === 'undefined' ? false : port.enabled;
+    }
     public async deleteAuxPort(data: any): Promise<any> {
         try {
             let portId = parseInt(data.portId, 10);
@@ -106,10 +110,11 @@ export class Connection {
                 netPort: 9801,
                 inactivityRetry: 10
             });
-            existing = this.getPortById(cfg);
+            existing = this.getPortByCfg(cfg);
             if (typeof existing !== 'undefined') {
                 existing.reconnects = 0;
                 if (!await existing.openAsync(cfg)) {
+                    if (cfg.netConnect) return Promise.reject(new InvalidOperationError(`Unable to open Socat Connection to ${pdata.netHost}`, 'setPortAsync'));
                     return Promise.reject(new InvalidOperationError(`Unable to open RS485 port ${pdata.rs485Port}`, 'setPortAsync'));
                 }
             }
@@ -150,7 +155,7 @@ export class Connection {
             }
         }
     }
-    public getPortById(cfg: any) {
+    public getPortByCfg(cfg: any) {
         let port = this.findPortById(cfg.portId || 0);
         if (typeof port === 'undefined') {
             port = new RS485Port(cfg);
@@ -352,7 +357,8 @@ export class RS485Port {
                     if (typeof resolve !== 'undefined') { resolve(false); }
                     if (this._cfg.inactivityRetry > 0) {
                         logger.error(`Net connect (socat) connection ${this.portId} error: ${err}.  Retry in ${this._cfg.inactivityRetry} seconds`);
-                        setTimeout(async () => { try { await this.openAsync(); } catch (err) { } }, this._cfg.inactivityRetry * 1000);
+                        if(this.connTimer) clearTimeout(this.connTimer);
+                        this.connTimer = setTimeout(async () => { try { await this.openAsync(); } catch (err) { } }, this._cfg.inactivityRetry * 1000);
                     }
                     else logger.error(`Net connect (socat) connection ${this.portId} error: ${err}.  Never retrying -- No retry time set`);
                 });
@@ -469,7 +475,7 @@ export class RS485Port {
                             }
                             else {
                                 this._port = undefined;
-                                logger.info(`Successfully closed ${this.portId} seral port ${this._cfg.rs485Port}`);
+                                logger.info(`Successfully closed ${this.portId} serial port ${this._cfg.rs485Port}`);
                                 resolve(true);
                                 this.isOpen = false;
                             }

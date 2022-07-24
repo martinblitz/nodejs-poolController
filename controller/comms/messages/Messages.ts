@@ -96,7 +96,7 @@ export class Message {
             else if (this.protocol === Protocol.Hayward) {
                 //            src   act   dest             
                 //0x10, 0x02, 0x00, 0x0C, 0x00, 0x00, 0x2D, 0x02, 0x36, 0x00, 0x83, 0x10, 0x03 -- Response from pump
-                return this.header.length > 4 ? this.header[4] : -1;
+                return this.header.length > 4 ? this.header[2] : -1;
             }
             else return this.header.length > 2 ? this.header[2] : -1;
         }
@@ -119,19 +119,20 @@ export class Message {
             //            src   act   dest             
             //0x10, 0x02, 0x00, 0x0C, 0x00, 0x00, 0x2D, 0x02, 0x36, 0x00, 0x83, 0x10, 0x03 -- Response from pump
             //0x10, 0x02, 0x0C, 0x01, 0x02, 0x2D, 0x00, 0x4E, 0x10, 0x03 -- Command to AUX2 Pump
-            return this.header.length > 2 ? this.header[2] : -1;
+            return this.header.length > 4 ? this.header[4] : -1;
         }
         if (this.header.length > 3) return this.header[3];
         else return -1;
     }
     public get action(): number {
         // The action byte is actually the 4th byte in the header the destination address is the 5th byte.
-        if (this.protocol === Protocol.Chlorinator || this.protocol === Protocol.AquaLink) return this.header.length > 3 ? this.header[3] : -1;
+        if (this.protocol === Protocol.Chlorinator ||
+            this.protocol === Protocol.AquaLink) return this.header.length > 3 ? this.header[3] : -1;
         else if (this.protocol === Protocol.Hayward) {
             //            src   act   dest             
             //0x10, 0x02, 0x00, 0x0C, 0x00, 0x00, 0x2D, 0x02, 0x36, 0x00, 0x83, 0x10, 0x03 -- Response from pump
             //0x10, 0x02, 0x0C, 0x01, 0x02, 0x2D, 0x00, 0x4E, 0x10, 0x03 -- Command to AUX2 Pump
-            this.header.length > 3 ? this.header[3] : -1;
+            return this.header.length > 3 ? this.header[3] || this.header[2] : -1;
         }
         if (this.header.length > 4) return this.header[4];
         else return -1;
@@ -164,7 +165,7 @@ export class Message {
         return pkt;
     }
     public toLog(): string {
-        return `{"portId":${this.portId},"id":${ this.id },"valid":${ this.isValid },"dir":"${this.direction}","proto":"${this.protocol}","pkt":[${JSON.stringify(this.padding)},${JSON.stringify(this.preamble)}, ${JSON.stringify(this.header)}, ${JSON.stringify(this.payload)},${JSON.stringify(this.term)}],"ts":"${Timestamp.toISOLocal(this.timestamp)}"}`;
+        return `{"port":${this.portId},"id":${ this.id },"valid":${ this.isValid },"dir":"${this.direction}","proto":"${this.protocol}","pkt":[${JSON.stringify(this.padding)},${JSON.stringify(this.preamble)}, ${JSON.stringify(this.header)}, ${JSON.stringify(this.payload)},${JSON.stringify(this.term)}],"ts":"${Timestamp.toISOLocal(this.timestamp)}"}`;
     }
 }
 export class Inbound extends Message {
@@ -202,22 +203,74 @@ export class Inbound extends Message {
         // prev been detected as chlor packets;
         // valid chlor packets should have 16,2,0 or 16,2,[80-96];
         // this should reduce the number of false chlor packets
-        return (ndx + 3 < bytes.length && bytes[ndx] === 16 && bytes[ndx + 1] === 2 && (bytes[ndx + 2] === 0 || (bytes[ndx + 2] >= 80 && bytes[ndx + 2] <= 96)))
+        // For any of these 16,2 type headers we need at least 5 bytes to determine the routing.
+        //63,15,16,2,29,9,36,0,0,0,0,0,16,0,32,0,0,2,0,75,75,32,241,80,85,24,241,16,16,48,245,69,45,100,186,16,2,80,17,0,115,16,3
+        if (bytes.length > ndx + 4) {
+            if (bytes[ndx] === 16 && bytes[ndx + 1] === 2) {
+                let dst = bytes[ndx + 2];
+                let act = bytes[ndx + 3];
+                // For now the dst byte will always be 0 or 80.
+                if (![0, 16, 80, 81, 82, 83].includes(dst)) {
+                    //logger.info(`Sensed chlorinator header but the dst byte is ${dst}`);
+                    return false;
+                }
+                else if (dst === 0 && [1, 18, 3].includes(act))
+                    return true;
+                else if (![0, 17, 19, 20, 21, 22].includes(act)) {
+                    //logger.info(`Sensed out chlorinator header but the dst byte is ${dst} ${act} ${JSON.stringify(bytes)}`);
+                    return false;
+                }
+                return true;
+            }
+        }
+        return false;
     }
     private testAquaLinkHeader(bytes: number[], ndx: number): boolean {
-        return (sys.controllerType === 'aqualink' && ndx + 3 < bytes.length && bytes[ndx] === 16 && bytes[ndx + 1] === 2);
+        if (bytes.length > ndx + 4 && sys.controllerType === 'aqualink') {
+            if (bytes[ndx] === 16 && bytes[ndx + 1] === 2) {
+                return true;
+            }
+        }
+        return false;
     }
     private testHaywardHeader(bytes: number[], ndx: number): boolean {
         //0x10, 0x02, 0x0C, 0x01, 0x00, 0x2D, 0x00, 0x4C, 0x10, 0x03 -- Command to pump
+        //[16,2,12,1,0]
         //0x10, 0x02, 0x0C, 0x01, 0x00, 0x2D, 0x00, 0x4C, 0x10, 0x03 -- Command to Filter Pump
+        //[16,2,12,1,0]
         //0x10, 0x02, 0x0C, 0x01, 0x02, 0x2D, 0x00, 0x4E, 0x10, 0x03 -- Command to AUX2 Pump
+        //[16,2,12,1,2]
         //            src   act   dest             
         //0x10, 0x02, 0x00, 0x0C, 0x00, 0x00, 0x2D, 0x02, 0x36, 0x00, 0x83, 0x10, 0x03 -- Response from pump
-        return (sys.controllerType === 'nixie' && ndx + 4 < bytes.length && bytes[ndx] === 16 && bytes[ndx + 1] === 2 && (bytes[ndx + 2] === 12 && bytes[ndx + 3] === 12));
+        //[16,2,0,12,0] --> Response
+        //[16,2,0,12,0]
+        if (bytes.length > ndx + 4) {
+            if (sys.controllerType === 'aqualink') return false;
+            if (bytes[ndx] === 16 && bytes[ndx + 1] === 2) {
+                let dst = bytes[ndx + 3];
+                let src = bytes[ndx + 2];
+                if (dst === 12 || src === 12) return true;
+            }
+        }
+        return false;
     }
-
-    private testBroadcastHeader(bytes: number[], ndx: number): boolean { return ndx < bytes.length - 3 && bytes[ndx] === 255 && bytes[ndx + 1] === 0 && bytes[ndx + 2] === 255 && bytes[ndx + 3] === 165; }
-    private testUnidentifiedHeader(bytes: number[], ndx: number): boolean { return ndx < bytes.length - 3 && bytes[ndx] === 255 && bytes[ndx + 1] === 0 && bytes[ndx + 2] === 255 && bytes[ndx + 3] !== 165; }
+    private testBroadcastHeader(bytes: number[], ndx: number): boolean {
+        // We are looking for [255,0,255,165]
+        if (bytes.length > ndx + 3) {
+            if (bytes[ndx] === 255 && bytes[ndx + 1] === 0 && bytes[ndx + 2] === 255 && bytes[ndx + 3] === 165) return true;
+            return false;
+        }
+        //return ndx < bytes.length - 3 && bytes[ndx] === 255 && bytes[ndx + 1] === 0 && bytes[ndx + 2] === 255 && bytes[ndx + 3] === 165;
+        return false;
+    }
+    private testUnidentifiedHeader(bytes: number[], ndx: number): boolean {
+        if (bytes.length > ndx + 3) {
+            if (bytes[ndx] === 255 && bytes[ndx + 1] === 0 && bytes[ndx + 2] === 255 && bytes[ndx + 3] !== 165) return true;
+            return false;
+        }
+        //return ndx < bytes.length - 3 && bytes[ndx] === 255 && bytes[ndx + 1] === 0 && bytes[ndx + 2] === 255 && bytes[ndx + 3] !== 165;
+        return false;
+    }
     private testChlorTerm(bytes: number[], ndx: number): boolean { return ndx + 2 < bytes.length && bytes[ndx + 1] === 16 && bytes[ndx + 2] === 3; }
     private testAquaLinkTerm(bytes: number[], ndx: number): boolean { return ndx + 2 < bytes.length && bytes[ndx + 1] === 16 && bytes[ndx + 2] === 3; }
     private testHaywardTerm(bytes: number[], ndx: number): boolean { return ndx + 3 < bytes.length && bytes[ndx + 2] === 16 && bytes[ndx + 3] === 3; }
@@ -255,10 +308,11 @@ export class Inbound extends Message {
         //return this.padding.length + this.preamble.length;
     }
     public readPacket(bytes: number[]): number {
+        //logger.info(`BYTES: ${JSON.stringify(bytes)}`);
         var ndx = this.readHeader(bytes, 0);
         if (this.isValid && this.header.length > 0) ndx = this.readPayload(bytes, ndx);
         if (this.isValid && this.header.length > 0) ndx = this.readChecksum(bytes, ndx);
-        //if (this.isComplete && !this.isValid) return this.rewind(bytes, ndx);
+        if (this.isComplete && !this.isValid) return this.rewind(bytes, ndx);
         return ndx;
     }
     public mergeBytes(bytes) {
@@ -271,30 +325,40 @@ export class Inbound extends Message {
     }
     public readHeader(bytes: number[], ndx: number): number {
         // start over to include the padding bytes.
+        //if (this.protocol !== Protocol.Unknown) {
+        //    logger.warn(`${this.protocol} resulted in an empty message header ${JSON.stringify(this.header)}`);
+        //}
         let ndxStart = ndx;
-        while (ndx < bytes.length) {
-            if (this.testChlorHeader(bytes, ndx)) {
-                this.protocol = Protocol.Chlorinator;
-                break;
+        // RKS: 05-30-22 -- OMG we have not been dealing with short headers.  As a result it was restarting
+        // the header process even after it had identified it.
+        if (this.protocol === Protocol.Unknown) {
+            while (ndx < bytes.length) {
+                if (this.testBroadcastHeader(bytes, ndx)) {
+                    this.protocol = Protocol.Broadcast;
+                    break;
+                }
+                if (this.testUnidentifiedHeader(bytes, ndx)) {
+                    this.protocol = Protocol.Unidentified;
+                    break;
+                }
+                if (this.testChlorHeader(bytes, ndx)) {
+                    this.protocol = Protocol.Chlorinator;
+                    break;
+                }
+                if (this.testAquaLinkHeader(bytes, ndx)) {
+                    this.protocol = Protocol.AquaLink;
+                    break;
+                }
+                if (this.testHaywardHeader(bytes, ndx)) {
+                    this.protocol = Protocol.Hayward;
+                    break;
+                }
+                this.padding.push(bytes[ndx++]);
             }
-            if (this.testAquaLinkHeader(bytes, ndx)) {
-                this.protocol = Protocol.AquaLink;
-                break;
-            }
-            if (this.testHaywardHeader(bytes, ndx)) {
-                this.protocol = Protocol.Hayward;
-                break;
-            }
-            if (this.testBroadcastHeader(bytes, ndx)) {
-                this.protocol = Protocol.Broadcast;
-                break;
-            }
-            else if (this.testUnidentifiedHeader(bytes, ndx)) {
-                this.protocol = Protocol.Unidentified;
-                break;
-            }
-            this.padding.push(bytes[ndx++]);
         }
+        // When the code above finds a protocol, ndx will be at the start of that
+        // header.  If it is not identified then it will rewind to the initial
+        // start position until we get more bytes.  This is the default case below.
         let ndxHeader = ndx;
         switch (this.protocol) {
             case Protocol.Pump:
@@ -309,11 +373,11 @@ export class Inbound extends Message {
                     // We actually don't have a complete header yet so just return.
                     // we will pick it up next go around.
                     // logger.debug(`We have an incoming message but the serial port hasn't given a complete header. [${this.padding}][${this.preamble}][${this.header}]`);
+                    //logger.info(`We don't have a complete header ${JSON.stringify(this.header)}`);
                     this.preamble = [];
                     this.header = [];
                     return ndxHeader;
                 }
-
                 if (this.source >= 96 && this.source <= 111) this.protocol = Protocol.Pump;
                 else if (this.dest >= 96 && this.dest <= 111) this.protocol = Protocol.Pump;
                 else if (this.source >= 112 && this.source <= 127) this.protocol = Protocol.Heater;
@@ -323,7 +387,7 @@ export class Inbound extends Message {
                 else if (this.source == 12 || this.dest == 12) this.protocol = Protocol.IntelliValve;
                 if (this.datalen > 75) {
                     //this.isValid = false;
-                    logger.debug(`Broadcast length ${this.datalen} exceeded 75bytes for ${this.protocol} message. Message rewound ${this.header}`);
+                    logger.debug(`Broadcast length ${this.datalen} exceeded 75 bytes for ${this.protocol} message. Message rewound ${this.header}`);
                     this.padding.push(...this.preamble);
                     this.padding.push(...this.header.slice(0, 1));
                     this.preamble = [];
@@ -352,11 +416,11 @@ export class Inbound extends Message {
                 }
                 break;
             case Protocol.Hayward:
-                ndx = this.pushBytes(this.header, bytes, ndx, 4);
+                ndx = this.pushBytes(this.header, bytes, ndx, 5);
                 if (this.header.length < 4) {
                     // We actually don't have a complete header yet so just return.
                     // we will pick it up next go around.
-                    logger.debug(`We have an incoming AquaLink message but the serial port hasn't given a complete header. [${this.padding}][${this.preamble}][${this.header}]`);
+                    logger.debug(`We have an incoming Hayward message but the serial port hasn't given a complete header. [${this.padding}][${this.preamble}][${this.header}]`);
                     this.preamble = [];
                     this.header = [];
                     return ndxHeader;
@@ -401,7 +465,11 @@ export class Inbound extends Message {
             case Protocol.IntelliValve:
             case Protocol.Heater:
             case Protocol.Unidentified:
-                if (this.datalen - this.payload.length <= 0) return ndx; // We don't need any more payload.
+                if (this.datalen - this.payload.length <= 0) {
+                    let buff = bytes.slice(ndx - 1);
+                    //logger.info(`We don't need any more payload ${this.datalen - this.payload.length} ${ndx} ${JSON.stringify(buff)};`);
+                    return ndx; // We don't need any more payload.
+                }
                 ndx = this.pushBytes(this.payload, bytes, ndx, this.datalen - this.payload.length);
                 break;
             case Protocol.Chlorinator:
@@ -586,7 +654,16 @@ export class Inbound extends Message {
                         PumpMessage.process(this);
                         break;
                     case 30:
-                        if (sys.controllerType !== ControllerType.Unknown) OptionsMessage.process(this);
+                        switch (sys.controllerType) {
+                            case ControllerType.Unknown:
+                                break;
+                            case ControllerType.SunTouch:
+                                ScheduleMessage.processSunTouch(this);
+                                break;
+                            default:
+                                OptionsMessage.process(this);
+                                break;
+                        }
                         break;
                     case 22:
                     case 32:
@@ -680,12 +757,32 @@ class OutboundCommon extends Message {
     }
     public get dest() { return super.dest; }
     public set source(val: number) {
-        if (this.protocol === Protocol.Hayward) this.header[2] = val;
-        else if (this.protocol !== Protocol.Chlorinator) this.header[3] = val;
+        switch (this.protocol) {
+            case Protocol.Chlorinator:
+                break;
+            case Protocol.Hayward:
+                this.header[3] = val;
+                break;
+            default:
+                this.header[3] = val;
+                break;
+        }
+        //if (this.protocol === Protocol.Hayward) this.header[2] = val;
+        //else if (this.protocol !== Protocol.Chlorinator) this.header[3] = val;
     }
     public get source() { return super.source; }
     public set action(val: number) {
-        (this.protocol !== Protocol.Chlorinator && this.protocol !== Protocol.Hayward) ? this.header[4] = val : this.header[3] = val;
+        switch (this.protocol) {
+            case Protocol.Chlorinator:
+                this.header[3] = val;
+                break;
+            case Protocol.Hayward:
+                this.header[2] = val;
+                break;
+            default:
+                this.header[4] = val;
+                break;
+        }
     }
     public get action() { return super.action; }
     public set datalen(val: number) { if (this.protocol !== Protocol.Chlorinator && this.protocol !== Protocol.Hayward) this.header[5] = val; }

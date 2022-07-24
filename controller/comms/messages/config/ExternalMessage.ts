@@ -16,7 +16,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import { Inbound } from "../Messages";
 import { sys, Body, ICircuitGroup, LightGroup, CircuitGroup } from "../../../Equipment";
-import { state, ICircuitGroupState, LightGroupState } from "../../../State";
+import { state, ICircuitGroupState, LightGroupState, CircuitGroupState } from "../../../State";
 import { Timestamp, utils } from "../../../Constants";
 import { logger } from "../../../../logger/Logger";
 export class ExternalMessage {
@@ -208,6 +208,7 @@ export class ExternalMessage {
                             sgroup = state.circuitGroups.getItemById(groupId, true);
                             sgroup.type = group.type = type;
                             if (typeof group.showInFeatures === 'undefined') group.showInFeatures = sgroup.showInFeatures = true;
+                            sgroup.showInFeatures = group.showInFeatures;
                             sys.lightGroups.removeItemById(groupId);
                             state.lightGroups.removeItemById(groupId);
                             sgroup.isActive = group.isActive = true;
@@ -406,6 +407,7 @@ export class ExternalMessage {
             for (let j = 0; j < 8; j++) {
                 let group = sys.circuitGroups.getInterfaceById(groupId);
                 let gstate = group.type === 1 ? state.lightGroups.getItemById(groupId, group.isActive) : state.circuitGroups.getItemById(groupId, group.isActive);
+          
                 if (group.isActive !== false) {
                     let isOn = ((byte & (1 << (j))) >> j) > 0;
                     sys.board.circuits.setEndTime(group, gstate, isOn);
@@ -441,6 +443,9 @@ export class ExternalMessage {
                                 lg.action = 0;
                                 break;
                         }
+                    }
+                    else if(gstate.dataName === 'circuitGroup') {
+                        (gstate as CircuitGroupState).showInFeatures  = group.showInFeatures;
                     }
                 }
                 else {

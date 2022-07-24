@@ -16,6 +16,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import { IntelliCenterBoard } from 'controller/boards/IntelliCenterBoard';
 import { EasyTouchBoard } from 'controller/boards/EasyTouchBoard';
+import { IntelliTouchBoard } from 'controller/boards/IntelliTouchBoard';
+import { SunTouchBoard } from "controller/boards/SunTouchBoard";
 
 import { logger } from '../../../../logger/Logger';
 import { ControllerType } from '../../../Constants';
@@ -59,23 +61,29 @@ export class EquipmentStateMessage {
             case 3:
             case 4:
             case 5:
+                logger.info(`Found IntelliTouch Controller`);
                 sys.controllerType = ControllerType.IntelliTouch;
                 model1 = msg.extractPayloadByte(28);
                 model2 = msg.extractPayloadByte(9);
+                (sys.board as IntelliTouchBoard).initExpansionModules(model1, model2);
                 break;
             case 11:
-                sys.controllerType = ControllerType.IntelliCom;
+                logger.info(`Found SunTouch Controller`);
+                sys.controllerType = ControllerType.SunTouch;
+                (sys.board as SunTouchBoard).initExpansionModules(model1, model2);
                 break;
             case 13:
             case 14:
+                logger.info(`Found EasyTouch Controller`);
                 sys.controllerType = ControllerType.EasyTouch;
+                (sys.board as EasyTouchBoard).initExpansionModules(model1, model2);
                 break;
             default:
                 logger.error(`Unknown Touch Controller ${msg.extractPayloadByte(28)}:${msg.extractPayloadByte(27)}`);
                 break;
         }
-        let board = sys.board as EasyTouchBoard;
-        board.initExpansionModules(model1, model2);
+        //let board = sys.board as EasyTouchBoard;
+        //board.initExpansionModules(model1, model2);
     }
     private static initController(msg: Inbound) {
         state.status = 1;
@@ -83,7 +91,16 @@ export class EquipmentStateMessage {
         const model2 = msg.extractPayloadByte(28);
         // RKS: 06-15-20 -- While this works for now the way we are detecting seems a bit dubious.  First, the 2 status message
         // contains two model bytes.  Right now the ones witness in the wild include 23 = fw1.023, 40 = fw1.040, 47 = fw1.047.
-        if (model2 === 0 && (model1 === 23 || model1 >= 40)) {
+        // RKS: 07-21-22 -- Pentair is about to release fw1.232.  Unfortunately, the byte mapping for this has changed such that
+        // the bytes [27,28] are [0,2] respectively.  This looks like it might be in conflict with IntelliTouch but it is not.  Below
+        // are the combinations of 27,28 we have seen for IntelliTouch
+        // [1,0] = i5+3
+        // [0,1] = i7+3
+        // [1,3] = i5+3s
+        // [1,4] = i9+3s
+        // [1,5] = i10+3d
+        if ((model2 === 0 && (model1 === 23 || model1 >= 40)) ||
+            (model2 === 2 && model1 == 0)) {
             state.equipment.controllerType = 'intellicenter';
             sys.board.modulesAcquired = false;
             sys.controllerType = ControllerType.IntelliCenter;
@@ -92,7 +109,6 @@ export class EquipmentStateMessage {
         }
         else {
             EquipmentStateMessage.initTouch(msg);
-            logger.info(`Found Controller Board ${state.equipment.model}`);
             sys.board.needsConfigChanges = true;
             setTimeout(function () { sys.checkConfiguration(); }, 300);
         }
@@ -374,13 +390,15 @@ export class EquipmentStateMessage {
                                     // the primary is a heatpump and the secondary is gas.  In the case of gas + solar or gas + heatpump
                                     // the gas heater is the primary and solar or heatpump is the secondary.   So we need to dance a little bit
                                     // here.  We do this by checking the heater options.
-
-                                    // This can be the only heater solar cannot be installed with this.
-                                    let byte = msg.extractPayloadByte(10);
-                                    // Either the primary, secondary, or both is engaged.
-                                    if ((byte & 0x14) === 0x14) heatStatus = sys.board.valueMaps.heatStatus.getValue('dual');
-                                    else if (byte & 0x10) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
-                                    else if (byte & 0x04) heatStatus = sys.board.valueMaps.heatStatus.getValue('hpheat');
+                                    if (tbody.heatMode > 0) { // Turns out that ET sometimes reports the last heat status when off.
+                                        // This can be the only heater solar cannot be installed with this.
+                                        let byte = msg.extractPayloadByte(10);
+                                        // Either the primary, secondary, or both is engaged.
+                                        if ((byte & 0x14) === 0x14) heatStatus = sys.board.valueMaps.heatStatus.getValue('dual');
+                                        // else if ((byte & 0x0c) === 0x0c) heatStatus = sys.board.valueMaps.heatStatus.getValue('off'); // don't need since we test for heatMode>0
+                                        else if (byte & 0x10) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
+                                        else if (byte & 0x04) heatStatus = sys.board.valueMaps.heatStatus.getValue('hpheat');
+                                    }
                                 }
                                 else {
                                     //const heaterActive = (msg.extractPayloadByte(10) & 0x0C) === 12;
@@ -414,11 +432,13 @@ export class EquipmentStateMessage {
                             if (tbody.isOn) {
                                 if (tbody.heaterOptions.hybrid > 0) {
                                     // This can be the only heater solar cannot be installed with this.
-                                    let byte = msg.extractPayloadByte(10);
-                                    // Either the primary, secondary, or both is engaged.
-                                    if ((byte & 0x28) === 0x28) heatStatus = sys.board.valueMaps.heatStatus.getValue('dual');
-                                    else if (byte & 0x20) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
-                                    else if (byte & 0x08) heatStatus = sys.board.valueMaps.heatStatus.getValue('hpheat');
+                                    if (tbody.heatMode > 0) {
+                                        let byte = msg.extractPayloadByte(10);
+                                        // Either the primary, secondary, or both is engaged.
+                                        if ((byte & 0x28) === 0x28) heatStatus = sys.board.valueMaps.heatStatus.getValue('dual');
+                                        else if (byte & 0x20) heatStatus = sys.board.valueMaps.heatStatus.getValue('heater');
+                                        else if (byte & 0x08) heatStatus = sys.board.valueMaps.heatStatus.getValue('hpheat');
+                                    }
                                 }
                                 else {
                                     //const heaterActive = (msg.extractPayloadByte(10) & 0x0C) === 12;
@@ -453,6 +473,18 @@ export class EquipmentStateMessage {
                                 sys.board.heaters.syncHeaterStates();
                                 break;
                             }
+                        case ControllerType.SunTouch:
+                            EquipmentStateMessage.processSunTouchCircuits(msg);
+                            sys.board.circuits.syncCircuitRelayStates();
+                            sys.board.features.syncGroupStates();
+                            sys.board.circuits.syncVirtualCircuitStates();
+                            sys.board.valves.syncValveStates();
+                            sys.board.filters.syncFilterStates();
+                            state.emitControllerChange();
+                            state.emitEquipmentChanges();
+                            sys.board.heaters.syncHeaterStates();
+                            sys.board.schedules.syncScheduleStates();
+                            break;
                         case ControllerType.EasyTouch:
                         case ControllerType.IntelliCom:
                         case ControllerType.IntelliTouch:
@@ -513,7 +545,9 @@ export class EquipmentStateMessage {
                 state.temps.waterSensor1 = msg.extractPayloadByte(0);
                 state.temps.air = msg.extractPayloadByte(2);
                 let solar: Heater = sys.heaters.getItemById(2);
-                if (solar.isActive) state.temps.solar = msg.extractPayloadByte(8);
+                // RKS: 05-18-22 - This is not correct the solar temp is not stored on this message.  It is always 0
+                // on an intelliTouch system with solar.
+                //if (solar.isActive) state.temps.solar = msg.extractPayloadByte(8);
                 // pool
                 let tbody: BodyTempState = state.temps.bodies.getItemById(1, true);
                 let cbody: Body = sys.bodies.getItemById(1);
@@ -645,6 +679,39 @@ export class EquipmentStateMessage {
         }
         msg.isProcessed = true;
     }
+    private static processSunTouchCircuits(msg: Inbound) {
+        // SunTouch has really twisted bit mapping for its
+        // circuit states.  Features are intertwined within the
+        // features.
+        let byte = msg.extractPayloadByte(2);
+        for (let i = 0; i < 8; i++) {
+            let id = i === 4 ? 7 : i > 5 ? i + 2 : i + 1;
+            let circ = sys.circuits.getInterfaceById(id, false, { isActive: false });
+            if (circ.isActive) {
+                let isOn = ((1 << i) & byte) > 0;
+                let cstate = state.circuits.getInterfaceById(id, circ.isActive);
+                if (isOn !== cstate.isOn) {
+                    sys.board.circuits.setEndTime(circ, cstate, isOn);
+                    cstate.isOn = isOn;
+                }
+            }
+        }
+        byte = msg.extractPayloadByte(3);
+        {
+            let circ = sys.circuits.getInterfaceById(10, false, { isActive: false });
+            if (circ.isActive) {
+                let isOn = (byte & 1) > 0;
+                let cstate = state.circuits.getInterfaceById(circ.id, circ.isActive);
+                if (isOn !== cstate.isOn) {
+                    sys.board.circuits.setEndTime(circ, cstate, isOn);
+                    cstate.isOn = isOn;
+                }
+            }
+        }
+        state.emitEquipmentChanges();
+        msg.isProcessed = true;
+    }
+
     private static processTouchCircuits(msg: Inbound) {
         let circuitId = 1;
         let maxCircuitId = sys.board.equipmentIds.features.end;

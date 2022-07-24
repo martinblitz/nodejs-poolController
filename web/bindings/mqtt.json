@@ -240,21 +240,23 @@
       "description": "Populate the circuitGroup topic",
       "topics": [
         {
-          "topic": "state/circuitGroups/@bind=data.id;/name",
-          "message": "{\"id\":@bind=data.id;,\"isOn\":@bind=data.isOn?'\"on\"':'\"off\"';}",
+          "topic": "state/circuitGroups/@bind=data.id;/@bind=data.name;",
+          "message": "{\"id\":@bind=data.id;,\"isOn\":@bind=data.isOn?'\"on\"':'\"off\"';,\"endTime\":\"@bind=data.endTime;\"}",
           "description": "Bind name to the state topic."
         },
         {
-          "topic": "state/circuitGroups/@bind=data.id;/isOn",
+          "topic": "state/circuitGroups/@bind=data.id;/@bind=data.name;/isOn",
           "message": "{\"id\":@bind=data.id;,\"isOn\":@bind=data.isOn?'\"on\"':'\"off\"';}",
-          "description": "Bind the on/off status to the topic."
+          "description": "Bind the on/off status to the topic.",
+          "enabled": false
         },
         {
-          "topic": "state/circuitGroups/@bind=data.id;/type",
-          "message": "{\"type\":@bind=data.type;}"
+          "topic": "state/circuitGroups/@bind=data.id;/@bind=data.name;/type",
+          "message": "{\"type\":@bind=data.type;}",
+          "enabled": false
         },
         {
-          "topic": "state/circuitGroups/@bind=data.id;/showInFeatures",
+          "topic": "state/circuitGroups/@bind=data.id;/@bind=data.name;/showInFeatures",
           "message": "{\"showInFeatures\":@bind=data.showInFeatures;}",
           "description": "Indicates wether the item should show in features."
         }
@@ -340,6 +342,16 @@
           "topic": "state/chlorinators/@bind=data.id;/@bind=data.name;/saltLevel",
           "message": "{\"saltLevel\":@bind=data.saltLevel;}",
           "description": "Send salt level."
+        },
+        {
+          "topic": "state/chlorinators/@bind=data.id;/@bind=data.name;/saltRequired",
+          "message": "{\"saltRequired\":@bind=data.saltRequired;}",
+          "description": "Send the calculated salt requirement."
+        },
+        {
+          "topic": "state/chlorinators/@bind=data.id;/@bind=data.name;/saltTarget",
+          "message": "{\"saltTarget\":@bind=data.saltTarget;}",
+          "description": "Send the target salt level."
         },
         {
           "topic": "state/chlorinators/@bind=data.id;/@bind=data.name;/type",
